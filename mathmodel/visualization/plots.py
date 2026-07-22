@@ -92,10 +92,11 @@ class Plotter:
         """柱状图。"""
         fig, ax = self._fig()
 
+        colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
         if horizontal:
-            ax.barh(x, y)
+            ax.barh(x, y, color=colors[:len(x)])
         else:
-            ax.bar(x, y)
+            ax.bar(x, y, color=colors[:len(x)])
 
         # 数值标签
         for i, v in enumerate(y):

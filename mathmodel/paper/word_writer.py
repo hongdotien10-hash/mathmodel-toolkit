@@ -245,17 +245,13 @@ def generate_paper(output_path, problem_text="", analysis=None, recommendations=
         _para(doc, ref, indent=False, size=11)
 
     # ===== 附录 =====
-    _heading(doc, "附录")
-    _para(doc, "附录A：核心求解代码说明")
-    _para(doc, "本文全部求解代码使用 Python 3.14 编写，核心依赖包括 NumPy、SciPy、Pandas、Matplotlib 和 PuLP。"
-          "代码采用模块化设计，分为数据预处理、模型构建、求解计算和可视化四个阶段，"
-          "各阶段之间通过 JSON 格式的中间结果文件进行数据交换。"
-          "主要求解函数均配有完整的参数说明和返回值文档，确保代码的可复现性。")
-    _para(doc, "附录B：数据预处理详情")
+    _heading(doc, "附录A：核心求解代码")
+    _para(doc, "以下为本文使用的核心求解代码（Python 3.14 + NumPy + SciPy + PuLP）。", indent=False)
+    _para(doc, _get_core_code(), indent=False, size=9)
+    _heading(doc, "附录B：数据预处理说明")
     _para(doc, "数据预处理阶段对原始数据进行了缺失值检测与填补、异常值识别与处理、"
           "数据标准化等操作。对于数值型缺失值采用中位数填补策略，"
-          "对于分类型缺失值采用众数填补策略。异常值采用 IQR 方法进行检测（阈值为1.5倍IQR），"
-          "异常值行予以标记但不直接删除，在后续分析中根据具体情况进行处理。"
+          "异常值采用 IQR 方法进行检测（阈值为1.5倍IQR）。"
           "标准化采用 Z-Score 方法，确保不同量纲的指标在同一尺度上进行比较。")
 
     # Save
@@ -695,6 +691,89 @@ def _conclusions(sub_problems, results):
     parts.append("综上所述，本研究的模型体系和方法论框架能够有效解决所提出的问题，"
                  "各模型的求解结果均满足约束条件和精度要求，具有良好的稳定性和可推广性。")
     return "\n\n".join(parts)
+
+
+def _get_core_code():
+    """返回核心求解代码"""
+    return '''# -*- coding: utf-8 -*-
+# 数学建模核心求解代码
+import numpy as np
+import pandas as pd
+from scipy import stats, optimize
+import matplotlib; matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+
+# ===== TOPSIS 综合评价 =====
+class TopsisSolver:
+    def solve(self, matrix, weights, impacts):
+        """matrix: m方案×n指标, weights: 权重向量, impacts: 1正向/-1负向"""
+        m, n = matrix.shape
+        # 归一化
+        norm = matrix / np.sqrt((matrix**2).sum(axis=0))
+        # 加权
+        weighted = norm * weights
+        # 理想解
+        ideal_best = np.array([weighted[:,j].max() if impacts[j]>0 else weighted[:,j].min() for j in range(n)])
+        ideal_worst = np.array([weighted[:,j].min() if impacts[j]>0 else weighted[:,j].max() for j in range(n)])
+        # 距离
+        d_plus = np.sqrt(((weighted-ideal_best)**2).sum(axis=1))
+        d_minus = np.sqrt(((weighted-ideal_worst)**2).sum(axis=1))
+        # 贴近度
+        scores = d_minus / (d_plus + d_minus)
+        return scores, scores.argsort()[::-1].argsort()+1  # scores, ranks
+
+# ===== GM(1,1) 灰色预测 =====
+def grey_forecast(x0, steps=3):
+    """x0: 原始非负序列"""
+    x1 = np.cumsum(x0)
+    n = len(x0)
+    # 紧邻均值
+    z1 = 0.5 * (x1[1:] + x1[:-1])
+    B = np.column_stack([-z1, np.ones(n-1)])
+    Y = x0[1:]
+    # 最小二乘
+    a, b = np.linalg.lstsq(B, Y, rcond=None)[0]
+    # 时间响应
+    x0_hat = x0[0]
+    fitted = [x0_hat]
+    for k in range(1, n+steps):
+        x0_hat = (x0[0]-b/a)*(1-np.exp(a))*np.exp(-a*k)
+        fitted.append(x0_hat)
+    fitted_vals = fitted[:n]
+    forecast_vals = fitted[n:n+steps]
+    mape = np.mean(np.abs((np.array(x0)-np.array(fitted_vals))/np.array(x0)))*100
+    return fitted_vals, forecast_vals, a, b, mape
+
+# ===== 0-1 整数规划 =====
+from pulp import LpProblem, LpMinimize, LpVariable, lpSum, LpStatus, value
+def binary_knapsack(costs, benefits, budget):
+    """costs: 成本列表, benefits: 收益列表, budget: 预算上限"""
+    n = len(costs)
+    prob = LpProblem("Knapsack", LpMinimize)
+    x = [LpVariable(f"x{i}", 0, 1, "Binary") for i in range(n)]
+    prob += lpSum(-benefits[i]*x[i] for i in range(n))  # min -benefit
+    prob += lpSum(costs[i]*x[i] for i in range(n)) <= budget
+    prob.solve()
+    if LpStatus[prob.status] == "Optimal":
+        solution = [int(value(v)) for v in x]
+        return solution, sum(costs[i]*solution[i] for i in range(n)), sum(benefits[i]*solution[i] for i in range(n))
+    return None
+
+if __name__ == "__main__":
+    # ---- Test TOPSIS ----
+    matrix = np.array([[30,8,15,3],[45,6,22,7],[25,9,12,2],[50,7,28,8],[35,5,18,4.]])
+    weights = np.array([0.25,0.22,0.26,0.28])
+    scores, ranks = TopsisSolver().solve(matrix, weights, [1,1,1,1])
+    print(f"TOPSIS: {scores.round(4)}")
+
+    # ---- Test GM(1,1) ----
+    x0 = [12,15,19,24,30,38]
+    fitted, forecast, a, b, mape = grey_forecast(x0, 3)
+    print(f"GM(1,1): forecast={[round(v,1) for v in forecast]}, MAPE={mape:.2f}%")
+
+    # ---- Test IP ----
+    r = binary_knapsack([30,45,25,50,35], [15,22,12,28,18], 100)
+    if r: print(f"IP: selected={r[0]}, cost={r[1]}, benefit={r[2]}")'''
 
 
 def _references():
