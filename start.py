@@ -160,49 +160,173 @@ def main():
     print()
 
     # ================================================================
-    # Step 3: Smart Solving
+    # Step 2: AI Data Cleaning
     # ================================================================
     print("-" * 40)
-    print("  Phase 2: Model Solving")
+    print("  Phase 1.5: AI Data Cleaning")
+    print("-" * 40)
+
+    try:
+        from api.config import APIConfig
+        cfg_c = APIConfig()
+        if cfg_c.is_configured:
+            from mathmodel.pipeline.smart_orchestrator import AIDrivenPipeline
+            ai_clean = AIDrivenPipeline(api_key=cfg_c.api_key, model=cfg_c.model)
+            clean_plan = ai_clean.clean_data_with_ai(problem_text, data_profiles)
+
+            # Execute cleaning on actual data
+            cleaned_count = 0
+            for issue in clean_plan.get("issues_found", []):
+                if issue.get("severity") in ("critical", "high"):
+                    fname = issue.get("file", "")
+                    col = issue.get("column", "")
+                    action = issue.get("fix_action", "")
+                    params = issue.get("fix_params", {})
+
+                    if fname in data_files:
+                        df = data_files[fname]
+                        try:
+                            if action == "convert_type" and col in df.columns:
+                                df[col] = pd.to_numeric(df[col], errors='coerce')
+                                cleaned_count += 1
+                                print(f"  [Clean] {fname}/{col}: converted to numeric")
+                            elif action == "fill_value" and col in df.columns:
+                                method = params.get("method", "median")
+                                if method == "median" and df[col].dtype in ('int64', 'float64'):
+                                    df[col] = df[col].fillna(df[col].median())
+                                elif method == "mode":
+                                    m = df[col].mode()
+                                    if not m.empty: df[col] = df[col].fillna(m[0])
+                                cleaned_count += 1
+                                print(f"  [Clean] {fname}/{col}: filled missing ({method})")
+                            elif action == "remove_outliers" and col in df.columns:
+                                threshold = params.get("threshold", 3)
+                                if df[col].dtype in ('int64', 'float64'):
+                                    z = np.abs((df[col] - df[col].mean()) / df[col].std())
+                                    n_before = len(df)
+                                    df = df[z < threshold]
+                                    data_files[fname] = df
+                                    cleaned_count += 1
+                                    print(f"  [Clean] {fname}/{col}: removed {n_before - len(df)} outliers ({len(df)} kept)")
+                            elif action == "drop_rows" and col in df.columns:
+                                n_before = len(df)
+                                df = df[df[col].notna()]
+                                data_files[fname] = df
+                                cleaned_count += 1
+                                print(f"  [Clean] {fname}/{col}: dropped {n_before - len(df)} rows with null")
+                        except Exception as e:
+                            print(f"  [Clean] {fname}/{col}: FAILED - {e}")
+
+            print(f"  [AI-Clean] Completed: {cleaned_count} fixes applied")
+    except Exception as e:
+        print(f"  [AI-Clean] Skipped: {e}")
+
+    # ================================================================
+    # Step 2.5: AI 指导数据加载
+    # ================================================================
+    data_guide = {}
+    try:
+        from api.config import APIConfig
+        cfg = APIConfig()
+        if cfg.is_configured:
+            from mathmodel.pipeline.smart_orchestrator import AIDrivenPipeline
+            ai0 = AIDrivenPipeline(api_key=cfg.api_key, model=cfg.model)
+            data_guide = ai0.guide_data_loading(problem_text, data_profiles)
+    except Exception as e:
+        print(f"  [AI-Data] Skipped: {e}")
+
+    # ================================================================
+    # Step 3: AI-guided Solve → Validate → Fix loop
+    # ================================================================
+    print("-" * 40)
+    print("  Phase 2-3: AI-Guided Solving & Validation")
     print("-" * 40)
 
     all_results = {}
+    max_solve_rounds = 3
+    ai_fix_plan = {}  # AI fix instructions, applied to solvers
 
-    for sp in sub_problems:
-        ptype = sp["type"]
-        print(f"\n  >> Q{sp['id']}: {sp['model']}")
+    for solve_round in range(1, max_solve_rounds + 1):
+        print(f"\n  === Solve Round {solve_round}/{max_solve_rounds} ===")
 
-        # ================================================================
-        # 评价类
-        # ================================================================
-        if ptype == "评价" and data_files:
-            with Timer() as t:
-                _solve_evaluation(sp, data_files, fig_dir, all_results)
-            print(f"     Time: {t.duration}")
+        # ---- Solve all sub-problems (with AI hints if available) ----
+        for sp in sub_problems:
+            ptype = sp["type"]
+            sp_id = sp["id"]
+            # Skip if already solved and valid in this round
+            if f"sub_{sp_id}" in all_results:
+                continue
 
-        # ================================================================
-        # 预测类
-        # ================================================================
-        elif ptype == "预测" and data_files:
-            with Timer() as t:
-                _solve_prediction(sp, data_files, fig_dir, all_results)
-            print(f"     Time: {t.duration}")
+            # Get AI fix hints for this sub-problem
+            sp_fixes = {}
+            for fix in ai_fix_plan.get("fixes", []):
+                if fix.get("sub_problem_id") == sp_id:
+                    sp_fixes = fix
+                    break
+            # Also try data_guide hints
+            dg_hints = {}
+            for pp in data_guide.get("per_problem", []):
+                if pp.get("sub_problem_id") == sp_id:
+                    dg_hints = pp
+                    break
+            ai_hints = {**dg_hints, **sp_fixes}
 
-        # ================================================================
-        # 优化类
-        # ================================================================
-        elif ptype == "优化" and data_files:
-            with Timer() as t:
-                _solve_optimization(sp, data_files, fig_dir, all_results)
-            print(f"     Time: {t.duration}")
+            print(f"\n  >> Q{sp_id}: {sp['model']}")
 
-        # ================================================================
-        # 统计类：相关性分析、分布分析
-        # ================================================================
-        elif ptype == "统计" and data_files:
-            with Timer() as t:
-                _solve_statistics(sp, data_files, fig_dir, all_results)
-            print(f"     Time: {t.duration}")
+            if ptype == "评价" and data_files:
+                with Timer() as t:
+                    _solve_evaluation(sp, data_files, fig_dir, all_results, ai_hints)
+                print(f"     Time: {t.duration}")
+            elif ptype == "预测" and data_files:
+                with Timer() as t:
+                    _solve_prediction(sp, data_files, fig_dir, all_results, ai_hints)
+                print(f"     Time: {t.duration}")
+            elif ptype == "优化" and data_files:
+                with Timer() as t:
+                    _solve_optimization(sp, data_files, fig_dir, all_results, ai_hints)
+                print(f"     Time: {t.duration}")
+            elif ptype == "统计" and data_files:
+                with Timer() as t:
+                    _solve_statistics(sp, data_files, fig_dir, all_results, ai_hints)
+                print(f"     Time: {t.duration}")
+            elif ptype == "综合" and data_files:
+                with Timer() as t:
+                    _solve_statistics(sp, data_files, fig_dir, all_results, ai_hints)
+                    if f"sub_{sp_id}" not in all_results:
+                        _solve_optimization(sp, data_files, fig_dir, all_results, ai_hints)
+                print(f"     Time: {t.duration}")
+
+        # ---- AI validate results ----
+        try:
+            from api.config import APIConfig
+            cfg2 = APIConfig()
+            if cfg2.is_configured:
+                from mathmodel.pipeline.smart_orchestrator import AIDrivenPipeline
+                aiv = AIDrivenPipeline(api_key=cfg2.api_key, model=cfg2.model)
+                validation = aiv.validate_results(problem_text, sub_problems, all_results, data_guide)
+
+                all_valid = all(c.get("valid", False) for c in validation.get("checks", []))
+                if all_valid:
+                    print(f"\n  [AI-Validate] ALL RESULTS VALID!")
+                    break
+                else:
+                    print(f"\n  [AI-Validate] Some results invalid. Getting AI fix plan...")
+                    ai_fix_plan = aiv.fix_solving_issues(problem_text, validation, data_guide)
+                    # Log fix instructions
+                    for fix in ai_fix_plan.get("fixes", []):
+                        print(f"       Q{fix.get('sub_problem_id','?')}: "
+                              f"solver={fix.get('solver_type','?')}, "
+                              f"cols={fix.get('columns_for_solver','?')}")
+                    # Clear invalid results before re-solving
+                    for c in validation.get("checks", []):
+                        if not c.get("valid"):
+                            key = f"sub_{c.get('sub_problem_id', '?')}"
+                            if key in all_results:
+                                del all_results[key]
+                                print(f"       Cleared {key} for re-solve")
+        except Exception as e:
+            print(f"  [AI-Validate] Skipped: {e}")
+            break
 
     # ================================================================
     # Step 4: Sensitivity
@@ -305,7 +429,7 @@ def main():
     print("  Phase 5: AI-Enhanced Paper")
     print("-" * 40)
 
-    # ---- Try AI-enhanced writing ----
+    # ---- AI-enhanced writing ----
     ai_content = {}
     try:
         from api.config import APIConfig
@@ -314,8 +438,16 @@ def main():
             from mathmodel.pipeline.smart_orchestrator import AIDrivenPipeline
             ai = AIDrivenPipeline(api_key=cfg.api_key, model=cfg.model)
             dsum = "\n".join(f"{n}: {p['shape'][0]}r x {p['shape'][1]}c" for n, p in data_profiles.items())
+
+            # Phase 1+: AI 最优模型选择
+            print("  [Phase 1+] AI Model Selection...")
+            model_selection = ai.select_best_models(problem_text, dsum, sub_problems)
+
+            # Phase 2: AI 制定计划
             plan = ai.analyze_and_plan(problem_text, dsum)
             analyses = ai.interpret_results(plan, all_results)
+
+            # Phase 3: AI 写论文
             ai_content["abstract"] = ai.write_abstract(problem_text, plan, all_results, analyses)
             for sp in sub_problems:
                 r = all_results.get(f"sub_{sp['id']}", {})
@@ -325,10 +457,21 @@ def main():
                 ai_content[f"section_{sp['id']}"] = ai.write_section(f"Q{sp['id']}", sp, r, a)
             ai_content["sensitivity"] = ai.write_sensitivity_section(all_results)
             ai_content["evaluation"] = ai.write_evaluation_section(sub_problems, all_results)
-            print(f"  [AI] Abstract: {len(ai_content['abstract'])} chars")
+
+            # Phase 6: 复盘论证 → 审查 → 质疑 → 优化 → 重写
+            print(f"\n  [Phase 6] AI Review & Refine...")
+            refined = ai.review_and_refine(
+                problem_text, sub_problems, all_results, ai_content, max_rounds=3
+            )
+            ai_content = refined.get("final_sections", ai_content)
+            final_score = refined.get("final_score", 0)
+            print(f"  [Phase 6] Final quality score: {final_score}/100")
+
+            print(f"\n  [AI] Abstract: {len(ai_content.get('abstract',''))} chars")
             print(f"  [AI] Sections: {sum(1 for k in ai_content if k.startswith('section_'))}")
     except Exception as e:
-        print(f"  [AI] Failed: {e}")
+        import traceback
+        print(f"  [AI] Failed: {e}\n{traceback.format_exc()[:200]}")
 
     import datetime
     ts = datetime.datetime.now().strftime("%H%M%S")
@@ -366,7 +509,7 @@ def main():
 # Intelligent Solvers
 # ================================================================
 
-def _solve_evaluation(sp, data_files, fig_dir, results):
+def _solve_evaluation(sp, data_files, fig_dir, results, ai_hints=None):
     """评价类：TOPSIS综合评价"""
     # Find mid-sized structured data (not huge transaction tables)
     best_name, best_df = None, None
@@ -418,7 +561,7 @@ def _solve_evaluation(sp, data_files, fig_dir, results):
     print(f"     Best: {labels[best_idx]} ({max(res['scores']):.4f})")
 
 
-def _solve_prediction(sp, data_files, fig_dir, results):
+def _solve_prediction(sp, data_files, fig_dir, results, ai_hints=None):
     """预测类：聚合时序数据后用GM(1,1)预测"""
     # Find time-series-like data: fewer columns, time-like index
     best_name, best_df = None, None
@@ -513,7 +656,7 @@ def _solve_prediction(sp, data_files, fig_dir, results):
     print(f"     Forecast: {[round(v, 1) for v in pred['forecast']]}")
 
 
-def _solve_optimization(sp, data_files, fig_dir, results):
+def _solve_optimization(sp, data_files, fig_dir, results, ai_hints=None):
     """优化类：自动聚合大数据后再做优化"""
     # Try to aggregate large transaction data into optimization-ready form
     # Look for sales data (large) + price/cost data
@@ -571,18 +714,40 @@ def _solve_optimization(sp, data_files, fig_dir, results):
     numeric = df.select_dtypes(include=np.number)
     cols = numeric.columns.tolist()
 
-    # Find cost and benefit columns
+    # AI hints take priority for column selection
     cost_col, benefit_col = None, None
-    for c in cols:
-        if any(kw in str(c) for kw in ['成本', '费用', '价格', '批发价', 'cost', 'price']):
-            cost_col = c
-        elif any(kw in str(c) for kw in ['收益', '利润', '销量', '覆盖', '人口', 'benefit', 'sales']):
-            benefit_col = c
+    if ai_hints:
+        ai_cols = ai_hints.get("columns_for_solver", {})
+        if ai_cols.get("cost_col") in cols:
+            cost_col = ai_cols["cost_col"]
+            print(f"     [AI hint] cost_col = {cost_col}")
+        if ai_cols.get("benefit_col") in cols:
+            benefit_col = ai_cols["benefit_col"]
+            print(f"     [AI hint] benefit_col = {benefit_col}")
+
+    # Auto-detect only if AI didn't specify
+    if cost_col is None:
+        for c in cols:
+            if any(kw in str(c) for kw in ['成本', '费用', '价格', '批发价', 'cost', 'price', '单价']):
+                cost_col = c; break
+    if benefit_col is None:
+        for c in cols:
+            if any(kw in str(c) for kw in ['收益', '利润', '销量', '覆盖', '人口', 'benefit', 'sales', '销售']):
+                benefit_col = c; break
 
     if cost_col is None:
         cost_col = cols[1] if len(cols) > 1 else cols[0]
     if benefit_col is None:
         benefit_col = cols[2] if len(cols) > 2 else cols[1]
+
+    # Exclude ID columns from being chosen as cost/benefit
+    exclude = set(ai_hints.get("id_columns", []) if ai_hints else [])
+    if cost_col in exclude and len(cols) > len(exclude):
+        for c in cols:
+            if c not in exclude: cost_col = c; break
+    if benefit_col in exclude and len(cols) > len(exclude):
+        for c in cols:
+            if c not in exclude and c != cost_col: benefit_col = c; break
 
     costs = numeric[cost_col].values.astype(float).tolist()
     benefits = numeric[benefit_col].values.astype(float).tolist()
@@ -663,21 +828,30 @@ def _solve_optimization(sp, data_files, fig_dir, results):
     print(f"     Final: {len(selected)} items, cost={sel_cost:.1f}/{budget:.1f}, benefit={sel_benefit:.1f}")
 
 
-def _solve_statistics(sp, data_files, fig_dir, results):
-    """统计类：相关性分析、分布统计"""
-    # Find medium-sized data
+def _solve_statistics(sp, data_files, fig_dir, results, ai_hints=None):
+    """统计类：相关性分析、分布统计。支持AI指定列名。"""
+    # AI hints: use specified columns instead of auto-detection
+    exclude_cols = []
+    if ai_hints:
+        exclude_cols = ai_hints.get("id_columns", [])
+        print(f"     [AI hint] Excluding ID cols: {exclude_cols[:5]}")
+
+    # Try to load full data for large transaction files
     best_name, best_df = None, None
     for name, df in data_files.items():
         num = df.select_dtypes(include=np.number).shape[1]
-        if num >= 2 and df.shape[0] < 50000:
+        if num >= 2 and df.shape[0] > 100:
+            # If large file, try to load full data for better analysis
+            if df.shape[0] < 1000 or (name in _full_data_cache):
+                pass  # use as-is
+            elif _data_profiles_global.get(name, {}).get('size_category') == 'large' and df.shape[0] <= 500:
+                # This is a sample — try loading full
+                full_df = _get_full_data(name)
+                if full_df is not None and full_df.shape[0] > df.shape[0]:
+                    df = full_df
+                    data_files[name] = df  # cache
             best_name, best_df = name, df
             break
-
-    if best_df is None:
-        for name, df in data_files.items():
-            if df.select_dtypes(include=np.number).shape[1] >= 2:
-                best_name, best_df = name, df
-                break
 
     if best_df is None:
         print("     No suitable data for statistics")
@@ -686,21 +860,24 @@ def _solve_statistics(sp, data_files, fig_dir, results):
     df = best_df
     print(f"     Using: {best_name} ({df.shape[0]} rows)")
 
-    # If large, sample
-    if df.shape[0] > 5000:
-        df = df.sample(5000, random_state=42)
-        print(f"     Sampled to 5000 rows")
-
+    # Exclude ID columns
     numeric = df.select_dtypes(include=np.number)
-    if numeric.shape[1] < 2:
-        print("     Not enough numeric columns")
-        return
+    cols_to_use = [c for c in numeric.columns if c not in exclude_cols]
+    if len(cols_to_use) < 2:
+        cols_to_use = numeric.columns.tolist()
+    numeric = numeric[cols_to_use]
+
+    # If large, sample for correlation
+    if df.shape[0] > 10000:
+        df_sample = df.sample(10000, random_state=42)
+        numeric = df_sample[numeric.columns].select_dtypes(include=np.number)
+        print(f"     Sampled to 10000 rows for correlation")
 
     # Correlation matrix
     corr_matrix = numeric.corr().values
     columns = numeric.columns.tolist()
 
-    # Find top correlations
+    # Also compute basic stats
     top_corrs = []
     for i in range(len(columns)):
         for j in range(i + 1, len(columns)):
@@ -709,23 +886,18 @@ def _solve_statistics(sp, data_files, fig_dir, results):
                 "correlation": round(float(corr_matrix[i][j]), 4),
             })
     top_corrs.sort(key=lambda x: abs(x["correlation"]), reverse=True)
-    top_corrs = top_corrs[:10]
-
-    # Basic stats
-    stats = numeric.describe().to_dict()
 
     results[f"sub_{sp['id']}"] = {
         "columns": columns,
         "corr_matrix": [[round(float(v), 4) for v in row] for row in corr_matrix],
-        "top_correlations": top_corrs,
-        "statistics": {k: {sk: round(float(sv), 4) for sk, sv in v.items()}
-                       for k, v in stats.items()},
-        "summary": f"相关性分析完成, {len(top_corrs)} 对相关关系, "
-                   f"最强: {top_corrs[0]['pair'][0]} vs {top_corrs[0]['pair'][1]} "
-                   f"(r={top_corrs[0]['correlation']:.3f})" if top_corrs else "",
+        "top_correlations": top_corrs[:15],
+        "data_shape": (df.shape[0], len(columns)),
+        "summary": (f"相关性分析: {df.shape[0]}行×{len(columns)}列, "
+                   f"最强相关: {top_corrs[0]['pair'][0]}-{top_corrs[0]['pair'][1]} "
+                   f"(r={top_corrs[0]['correlation']:.3f})" if top_corrs else ""),
     }
 
-    print(f"     Top correlations:")
+    print(f"     Analyzed {len(columns)} columns, {df.shape[0]} rows")
     for tc in top_corrs[:5]:
         print(f"       {tc['pair'][0]} vs {tc['pair'][1]}: r={tc['correlation']:.3f}")
 
