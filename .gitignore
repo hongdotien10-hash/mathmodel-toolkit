@@ -82,3 +82,5 @@ tmp/
 temp/
 *.tmp
 ~
+demo/output_demo/
+output/
