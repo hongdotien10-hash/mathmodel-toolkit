@@ -1,0 +1,115 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mathmodel-toolkit"
+version = "0.1.0"
+description = "数学建模竞赛全自动求解器 — 上传题目，一键生成论文"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "MathModel Contributors" }
+]
+keywords = [
+    "mathematical-modeling",
+    "math-modeling-contest",
+    "CUMCM",
+    "MCM-ICM",
+    "optimization",
+    "data-science",
+    "paper-generation",
+    "auto-solver",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Education",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24.0",
+    "scipy>=1.11.0",
+    "pandas>=2.0.0",
+    "matplotlib>=3.7.0",
+    "seaborn>=0.12.0",
+    "scikit-learn>=1.3.0",
+    "rich>=13.0.0",
+    "pydantic>=2.0.0",
+    "pyyaml>=6.0",
+    "openpyxl>=3.1.0",
+    "python-docx>=1.0.0",
+    "jieba>=0.42.0",
+]
+
+[project.optional-dependencies]
+pdf = [
+    "PyMuPDF>=1.23.0",
+    "pdfplumber>=0.10.0",
+]
+optimization = [
+    "cvxpy>=1.4.0",
+    "pulp>=2.7.0",
+]
+timeseries = [
+    "statsmodels>=0.14.0",
+]
+diagram = [
+    "graphviz>=0.20.0",
+]
+webui = [
+    "streamlit>=1.28.0",
+]
+all = [
+    "mathmodel-toolkit[pdf,optimization,timeseries,diagram,webui]",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "black>=23.0",
+    "ruff>=0.1.0",
+    "mypy>=1.5",
+    "mkdocs>=1.5",
+    "mkdocstrings[python]>=0.23",
+]
+
+[project.scripts]
+mathmodel = "mathmodel.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/username/mathmodel-toolkit"
+Documentation = "https://mathmodel-toolkit.readthedocs.io"
+Repository = "https://github.com/username/mathmodel-toolkit"
+Issues = "https://github.com/username/mathmodel-toolkit/issues"
+
+[tool.setuptools.packages.find]
+include = ["mathmodel*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310", "py311", "py312"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]

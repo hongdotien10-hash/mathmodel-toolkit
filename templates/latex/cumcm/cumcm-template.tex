@@ -1,0 +1,95 @@
+% CUMCM 全国大学生数学建模竞赛论文模板
+% 使用方法: xelatex paper.tex
+
+\documentclass[12pt,a4paper]{article}
+
+% ---- 中文支持 ----
+\usepackage[UTF8]{ctex}
+\setCJKmainfont{SimSun}[AutoFakeBold=2.5]
+\setCJKsansfont{SimHei}
+\setCJKmonofont{FangSong}
+
+% ---- 数学 ----
+\usepackage{amsmath,amssymb,amsthm}
+\newtheorem{theorem}{定理}
+\newtheorem{definition}{定义}
+
+% ---- 图表 ----
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{multirow}
+\usepackage{subcaption}
+
+% ---- 排版 ----
+\usepackage{geometry}
+\geometry{a4paper, margin=2.5cm}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{lastpage}
+
+% ---- 标题格式 ----
+\usepackage{titlesec}
+\titleformat{\section}{\centering\LARGE\bfseries}{}{0em}{}
+\titleformat{\subsection}{\Large\bfseries}{}{0em}{}
+
+% ---- 页眉页脚 ----
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[C]{数学建模竞赛论文}
+\fancyfoot[C]{\thepage}
+
+\begin{document}
+
+% ====== 标题 ======
+\title{\textbf{\Huge 数学建模竞赛论文}}
+\author{}
+\date{}
+\maketitle
+
+% ====== 摘要 ======
+\begin{abstract}
+\noindent
+本文针对\ldots\ldots 问题，建立了\ldots\ldots 模型。
+
+% 关键词
+\vspace{1em}
+\noindent\textbf{关键词：}数学模型；优化；评价；灵敏度分析
+\end{abstract}
+
+% ====== 问题重述 ======
+\section{问题重述}
+
+% ====== 问题分析 ======
+\section{问题分析}
+
+% ====== 模型假设与符号说明 ======
+\section{模型假设与符号说明}
+\subsection{模型假设}
+\subsection{符号说明}
+
+% ====== 模型建立与求解 ======
+\section{模型建立与求解}
+
+% ====== 灵敏度分析 ======
+\section{灵敏度分析}
+
+% ====== 模型评价与推广 ======
+\section{模型评价与推广}
+\subsection{模型优点}
+\subsection{模型不足}
+\subsection{模型推广}
+
+% ====== 参考文献 ======
+\begin{thebibliography}{99}
+\bibitem{ref1} 姜启源, 谢金星, 叶俊. 数学模型（第五版）. 高等教育出版社, 2018.
+\bibitem{ref2} 司守奎, 孙玺菁. 数学建模算法与应用（第三版）. 国防工业出版社, 2021.
+\end{thebibliography}
+
+% ====== 附录 ======
+\section*{附录}
+
+\end{document}
