@@ -371,48 +371,76 @@ def main():
     fig_count = 0
 
     for key, value in all_results.items():
-        # Bar chart for scores
+        # 评价得分柱状图
         if "scores" in value and "labels" in value:
             labels = value["labels"]
             scores = [float(s) for s in value["scores"]]
-            fig, ax = plotter.bar(x=labels, y=scores, xlabel="", ylabel="Score",
-                                  title="Evaluation Results", labels=labels)
-            plotter.save(fig, fig_dir / "evaluation_scores.pdf", dpi=300)
-            plotter.save(fig, fig_dir / "evaluation_scores.png", dpi=200)
+            fig, ax = plotter.bar(x=labels, y=scores, xlabel="方案", ylabel="综合得分", labels=labels)
+            plotter.save(fig, fig_dir / "evaluation_scores.pdf")
+            plotter.save(fig, fig_dir / "evaluation_scores.png")
             fig_count += 1
-            print(f"  [{fig_count}] Evaluation chart")
+            print(f"  [{fig_count}] 评价得分图")
 
-        # Forecast chart
+        # 预测对比图 (国赛标准: 实际+拟合+预测)
         if "forecast" in value and "fitted" in value:
             fitted = value["fitted"]
             forecast = value["forecast"]
-            all_y = fitted + forecast
-            n = len(fitted)
-            x = list(range(1, len(all_y) + 1))
-            fig, ax = plotter.line(x=x, y=all_y, xlabel="Period", ylabel="Value",
-                                   title="Forecast Results", markers=True)
-            ax.scatter(x[:n], fitted, color="#d62728", s=60, zorder=5, label="Fitted")
-            ax.scatter(x[n:], forecast, color="#2ca02c", s=60, zorder=5, label="Forecast")
-            ax.axvline(x=n - 0.5, color='gray', linestyle='--', alpha=0.5)
-            ax.legend()
-            plotter.save(fig, fig_dir / "forecast.pdf", dpi=300)
-            plotter.save(fig, fig_dir / "forecast.png", dpi=200)
+            # Use forecast_plot for CUMCM standard
+            if "original" in value:
+                actual = value["original"]
+                fig, ax = plotter.forecast_plot(actual, fitted, forecast,
+                                                xlabel="时间序号", ylabel="数值")
+            else:
+                # Fallback to line chart with markers
+                all_y = fitted + forecast
+                n = len(fitted)
+                fig, ax = plotter.line(x=list(range(len(all_y))), y=all_y, xlabel="时间序号", ylabel="数值")
+                ax.scatter(range(n), fitted, color=get_colors(2)[0], s=40, zorder=5, label="拟合值")
+                ax.scatter(range(n, len(all_y)), forecast, color=get_colors(2)[1], s=40, zorder=5, label="预测值")
+                ax.axvline(x=n-0.5, color="gray", linestyle=":", alpha=0.5)
+                ax.legend(fontsize=9, frameon=False)
+            plotter.save(fig, fig_dir / "forecast.pdf")
+            plotter.save(fig, fig_dir / "forecast.png")
             fig_count += 1
-            print(f"  [{fig_count}] Forecast chart")
+            print(f"  [{fig_count}] 预测趋势图")
 
-        # Correlation heatmap
+        # 相关性热力图
         if "corr_matrix" in value and len(value.get("corr_matrix", [])) > 0:
             corr = np.array(value["corr_matrix"])
             cols = value.get("columns", [f"V{i}" for i in range(len(corr))])
-            fig, ax = plt.subplots(figsize=(len(cols)*1.2, len(cols)*1.0))
-            im = ax.imshow(corr, cmap='RdBu_r', vmin=-1, vmax=1, aspect='auto')
-            ax.set_xticks(range(len(cols)))
-            ax.set_yticks(range(len(cols)))
-            ax.set_xticklabels(cols, rotation=45, ha='right', fontsize=8)
-            ax.set_yticklabels(cols, fontsize=8)
-            plt.colorbar(im, ax=ax, label='Correlation')
-            ax.set_title("Correlation Matrix")
-            fig.tight_layout()
+            if len(cols) <= 12:
+                fig, ax = plotter.heatmap(corr, cols)
+            else:
+                # Too many columns, take top 10
+                fig, ax = plotter.heatmap(corr[:10, :10], cols[:10])
+            plotter.save(fig, fig_dir / "correlation_heatmap.pdf")
+            plotter.save(fig, fig_dir / "correlation_heatmap.png")
+            fig_count += 1
+            print(f"  [{fig_count}] 相关热力图")
+
+        # 优化方案图
+        if "selection" in value:
+            labels = value.get("labels_all", value.get("selection", []))
+            costs = value.get("costs", [])
+            benefits = value.get("benefits", [])
+            solution = value.get("solution", [])
+            if costs and benefits and len(costs) == len(benefits):
+                panels = [
+                    {"type": "bar", "x": labels, "y": costs, "label": "(a) 成本对比", "xlabel": "", "ylabel": "成本"},
+                    {"type": "bar", "x": labels, "y": benefits, "label": "(b) 收益对比", "xlabel": "", "ylabel": "收益"},
+                ]
+                fig, axes = plotter.multi_panel(panels, 1, 2, figsize=(10, 4))
+                # Highlight selected items
+                if solution:
+                    colors_bar = get_colors(len(labels))
+                    for i, (ax, vals) in enumerate(zip(np.atleast_1d(axes).flat, [costs, benefits])):
+                        for j, (bar, selected) in enumerate(zip(ax.patches, solution)):
+                            if not selected:
+                                bar.set_alpha(0.25)
+                plotter.save(fig, fig_dir / "optimization.pdf")
+                plotter.save(fig, fig_dir / "optimization.png")
+                fig_count += 1
+                print(f"  [{fig_count}] 优化方案对比图")
             plotter.save(fig, fig_dir / "correlation_heatmap.pdf", dpi=300)
             plotter.save(fig, fig_dir / "correlation_heatmap.png", dpi=200)
             fig_count += 1

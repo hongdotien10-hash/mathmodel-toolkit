@@ -1,276 +1,272 @@
-"""标准图表生成器。
+"""国赛论文图表生成器 — 对标优秀论文标准
 
-提供竞赛论文常用的图表类型：折线图、柱状图、散点图、
-箱线图、饼图、误差棒图等。
+所有图表默认: 无标题(标题由论文caption承担)、despine、150dpi、彩色、中文字体
 """
 
 from pathlib import Path
 from typing import Optional, Union
-
 import numpy as np
 import pandas as pd
-
-from mathmodel.visualization.styles import set_style
+import matplotlib.pyplot as plt
+from mathmodel.visualization.styles import despine, get_colors
 
 
 class Plotter:
-    """标准图表生成器。
+    """国赛论文图表生成器"""
 
-    所有方法均返回 (fig, ax) 元组，并支持直接保存为 PDF/SVG/PNG。
-
-    Usage::
-
-        plotter = Plotter(language="zh")
-        fig, ax = plotter.line(x, y, xlabel="时间", ylabel="值", title="趋势图")
-        plotter.save(fig, "output/trend.pdf")
-    """
-
-    def __init__(self, language: str = "zh", palette: str = "default"):
-        set_style(language, palette)
+    def __init__(self, language: str = "zh"):
         self.language = language
-        self.palette = palette
-        self._figures: list = []
+        self._figures = []
 
-    def _fig(self, figsize: tuple = (8, 5)):
-        """创建 figure 并注册。"""
-        import matplotlib.pyplot as plt
+    def _fig(self, figsize=(6, 4)):
         fig, ax = plt.subplots(figsize=figsize)
         self._figures.append(fig)
+        despine(ax)
         return fig, ax
 
-    # =====================================================================
-    # 折线图
-    # =====================================================================
-
-    def line(
-        self,
-        x: Union[list, np.ndarray],
-        y: Union[list, np.ndarray, dict],
-        xlabel: str = "",
-        ylabel: str = "",
-        title: str = "",
-        labels: Optional[list[str]] = None,
-        markers: bool = True,
-    ):
-        """折线图。
-
-        Args:
-            x: x 轴数据
-            y: y 轴数据，若为 dict 则每个 key 画一条线
-            labels: 图例标签
-            markers: 是否显示数据点标记
-        """
-        fig, ax = self._fig()
-
-        if isinstance(y, dict):
-            for i, (name, values) in enumerate(y.items()):
-                marker = "o" if markers else None
-                ax.plot(x, values, marker=marker, linewidth=1.5, label=name)
-        else:
-            ax.plot(x, y, marker="o" if markers else None, linewidth=1.5,
-                    label=labels[0] if labels else None)
-
-        self._decorate(ax, xlabel, ylabel, title)
-        if labels or isinstance(y, dict):
-            ax.legend()
-        return fig, ax
-
-    # =====================================================================
-    # 柱状图
-    # =====================================================================
-
-    def bar(
-        self,
-        x: Union[list, np.ndarray],
-        y: Union[list, np.ndarray],
-        xlabel: str = "",
-        ylabel: str = "",
-        title: str = "",
-        labels: Optional[list[str]] = None,
-        horizontal: bool = False,
-    ):
-        """柱状图。"""
-        fig, ax = self._fig()
-
-        colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
-        if horizontal:
-            ax.barh(x, y, color=colors[:len(x)])
-        else:
-            ax.bar(x, y, color=colors[:len(x)])
-
-        # 数值标签
-        for i, v in enumerate(y):
-            if horizontal:
-                ax.text(v, i, f" {v:.2f}", va="center", fontsize=8)
-            else:
-                ax.text(i, v, f"{v:.2f}", ha="center", va="bottom", fontsize=8)
-
-        if labels:
-            if horizontal:
-                ax.set_yticks(range(len(labels)))
-                ax.set_yticklabels(labels)
-            else:
-                ax.set_xticks(range(len(labels)))
-                ax.set_xticklabels(labels, rotation=30)
-
-        self._decorate(ax, xlabel, ylabel, title)
-        return fig, ax
-
-    # =====================================================================
-    # 散点图
-    # =====================================================================
-
-    def scatter(
-        self,
-        x: Union[list, np.ndarray],
-        y: Union[list, np.ndarray],
-        xlabel: str = "",
-        ylabel: str = "",
-        title: str = "",
-        color: Optional[Union[list, np.ndarray]] = None,
-        alpha: float = 0.7,
-        trend_line: bool = False,
-    ):
-        """散点图（可选趋势线）。"""
-        fig, ax = self._fig()
-
-        sc = ax.scatter(x, y, c=color, alpha=alpha, s=30, cmap="viridis")
-        if color is not None:
-            fig.colorbar(sc, ax=ax)
-
-        if trend_line:
-            x_arr = np.array(x, dtype=float)
-            y_arr = np.array(y, dtype=float)
-            coeffs = np.polyfit(x_arr, y_arr, 1)
-            x_line = np.linspace(x_arr.min(), x_arr.max(), 100)
-            ax.plot(x_line, np.polyval(coeffs, x_line), "r--", linewidth=1, label="趋势线")
-            ax.legend()
-
-        self._decorate(ax, xlabel, ylabel, title)
-        return fig, ax
-
-    # =====================================================================
-    # 箱线图
-    # =====================================================================
-
-    def boxplot(
-        self,
-        data: Union[list[np.ndarray], dict],
-        xlabel: str = "",
-        ylabel: str = "",
-        title: str = "",
-        labels: Optional[list[str]] = None,
-    ):
-        """箱线图。"""
-        fig, ax = self._fig()
-
-        if isinstance(data, dict):
-            labels = list(data.keys())
-            data = list(data.values())
-
-        bp = ax.boxplot(data, labels=labels, patch_artist=True)
-        for patch in bp["boxes"]:
-            patch.set_alpha(0.6)
-
-        self._decorate(ax, xlabel, ylabel, title)
-        return fig, ax
-
-    # =====================================================================
-    # 饼图
-    # =====================================================================
-
-    def pie(
-        self,
-        values: Union[list, np.ndarray],
-        labels: Optional[list[str]] = None,
-        title: str = "",
-        pct_threshold: float = 3.0,
-    ):
-        """饼图。"""
-        fig, ax = self._fig(figsize=(7, 7))
-
-        wedges, texts, autotexts = ax.pie(
-            values,
-            labels=labels,
-            autopct=lambda p: f"{p:.1f}%" if p > pct_threshold else "",
-            startangle=90,
-        )
-        ax.set_title(title, fontsize=12, fontweight="bold")
-
-        return fig, ax
-
-    # =====================================================================
-    # 误差棒图
-    # =====================================================================
-
-    def errorbar(
-        self,
-        x: Union[list, np.ndarray],
-        y: Union[list, np.ndarray],
-        yerr: Union[list, np.ndarray],
-        xlabel: str = "",
-        ylabel: str = "",
-        title: str = "",
-    ):
-        """误差棒图。"""
-        fig, ax = self._fig()
-        ax.errorbar(x, y, yerr=yerr, fmt="o-", capsize=5, capthick=1.5, linewidth=1.5)
-        self._decorate(ax, xlabel, ylabel, title)
-        return fig, ax
-
-    # =====================================================================
-    # 多子图
-    # =====================================================================
-
-    def subplots_grid(
-        self,
-        nrows: int = 1,
-        ncols: int = 2,
-        figsize: tuple = (12, 5),
-    ):
-        """创建多子图网格。"""
-        import matplotlib.pyplot as plt
-        fig, axes = plt.subplots(nrows, ncols, figsize=figsize)
+    def _multi_fig(self, rows, cols, figsize=None):
+        w, h = figsize or (5*cols, 4*rows)
+        fig, axes = plt.subplots(rows, cols, figsize=(w, h))
         self._figures.append(fig)
+        for ax in np.atleast_1d(axes).flat:
+            despine(ax)
         return fig, axes
 
-    # =====================================================================
-    # 保存 & 清理
-    # =====================================================================
+    # ==================================================================
+    # 柱状图 (国赛最常用)
+    # ==================================================================
 
-    def save(self, fig, path: str | Path, dpi: int = 300) -> Path:
-        """保存图表为文件。"""
+    def bar(self, x, y, xlabel="", ylabel="", labels=None, horizontal=False,
+            color=None, value_format=".2f"):
+        """柱状图 — 多彩 + 数值标签"""
+        fig, ax = self._fig()
+        n = len(y)
+        colors = color or get_colors(n)
+
+        if horizontal:
+            bars = ax.barh(range(n), y, color=colors[:n], height=0.65, edgecolor="white", linewidth=0.5)
+            ax.set_yticks(range(n))
+            ax.set_yticklabels(labels or x, fontsize=9)
+            for i, (v, bar) in enumerate(zip(y, bars)):
+                ax.text(bar.get_width() + max(y)*0.01, bar.get_y() + bar.get_height()/2,
+                        f"{v:{value_format}}", va="center", fontsize=8)
+        else:
+            bars = ax.bar(range(n), y, color=colors[:n], width=0.65, edgecolor="white", linewidth=0.5)
+            ax.set_xticks(range(n))
+            ax.set_xticklabels(labels or x, fontsize=9, rotation=30 if n > 6 else 0)
+            for bar, v in zip(bars, y):
+                ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(y)*0.02,
+                        f"{v:{value_format}}", ha="center", va="bottom", fontsize=8)
+
+        ax.set_xlabel(xlabel, fontsize=11)
+        ax.set_ylabel(ylabel, fontsize=11)
+        ax.grid(axis="y", alpha=0.2, linestyle=":")
+        fig.tight_layout()
+        return fig, ax
+
+    def grouped_bar(self, groups, values_dict, xlabel="", ylabel=""):
+        """分组柱状图 — 多组对比"""
+        n_groups = len(groups)
+        n_bars = len(values_dict)
+        fig, ax = self._fig(figsize=(max(8, n_groups*1.2), 5))
+        colors = get_colors(n_bars)
+        width = 0.8 / n_bars
+        x = np.arange(n_groups)
+
+        for i, (name, vals) in enumerate(values_dict.items()):
+            offset = (i - n_bars/2 + 0.5) * width
+            ax.bar(x + offset, vals, width*0.85, label=name, color=colors[i],
+                   edgecolor="white", linewidth=0.5)
+
+        ax.set_xticks(x)
+        ax.set_xticklabels(groups, fontsize=9, rotation=30 if n_groups > 5 else 0)
+        ax.set_xlabel(xlabel, fontsize=11)
+        ax.set_ylabel(ylabel, fontsize=11)
+        ax.legend(fontsize=9, frameon=False)
+        ax.grid(axis="y", alpha=0.2, linestyle=":")
+        fig.tight_layout()
+        return fig, ax
+
+    # ==================================================================
+    # 折线图 (预测、趋势)
+    # ==================================================================
+
+    def line(self, x, y, xlabel="", ylabel="", label="", color=None, markers=True,
+             fill_alpha=0.1, linewidth=2.0):
+        """折线图 — 带标记点 + 半透明填充"""
+        fig, ax = self._fig()
+        c = color or get_colors(1)[0]
+        marker = "o" if markers and len(y) < 30 else None
+        ax.plot(x, y, color=c, linewidth=linewidth, marker=marker, markersize=5,
+                markerfacecolor="white", markeredgewidth=1.5, label=label, zorder=3)
+        if fill_alpha:
+            ax.fill_between(range(len(y)) if isinstance(x, list) else x, y, alpha=fill_alpha,
+                            color=c)
+        ax.set_xlabel(xlabel, fontsize=11)
+        ax.set_ylabel(ylabel, fontsize=11)
+        if label:
+            ax.legend(fontsize=9, frameon=False)
+        ax.grid(alpha=0.2, linestyle=":")
+        fig.tight_layout()
+        return fig, ax
+
+    def forecast_plot(self, actual, fitted, forecast, xlabel="", ylabel=""):
+        """预测对比图 — 实际值(散点) + 拟合线 + 预测延伸(虚线)"""
+        fig, ax = self._fig(figsize=(7, 4.5))
+        n_fit = len(fitted)
+        n_all = n_fit + len(forecast)
+        colors = get_colors(3)
+
+        x_all = list(range(n_all))
+        ax.scatter(range(n_fit), actual, color=colors[0], s=50, zorder=5, label="Actual", edgecolors="white")
+        ax.plot(range(n_fit), fitted, color=colors[1], linewidth=2, label="Fitted", zorder=3)
+        ax.plot(range(n_fit-1, n_all), fitted[-1:] + forecast, color=colors[2],
+                linewidth=2, linestyle="--", marker="s", markersize=5,
+                markerfacecolor="white", label="Forecast", zorder=3)
+        ax.axvline(x=n_fit-0.5, color="gray", linestyle=":", alpha=0.5, linewidth=1)
+        ax.set_xlabel(xlabel, fontsize=11)
+        ax.set_ylabel(ylabel, fontsize=11)
+        ax.legend(fontsize=9, frameon=False)
+        ax.grid(alpha=0.2, linestyle=":")
+        fig.tight_layout()
+        return fig, ax
+
+    # ==================================================================
+    # 散点图 (相关性、分布)
+    # ==================================================================
+
+    def scatter(self, x, y, xlabel="", ylabel="", color=None, alpha=0.6,
+                fit_line=False, s=30):
+        """散点图 — 可选拟合线"""
+        fig, ax = self._fig()
+        c = color or get_colors(1)[0]
+        ax.scatter(x, y, c=c, alpha=alpha, s=s, edgecolors="white", linewidth=0.3, zorder=3)
+
+        if fit_line and len(x) > 2:
+            z = np.polyfit(x, y, 1)
+            p = np.poly1d(z)
+            x_line = np.linspace(min(x), max(x), 100)
+            ax.plot(x_line, p(x_line), "--", color="gray", linewidth=1.5, alpha=0.7,
+                    label=f"y={z[0]:.3f}x+{z[1]:.3f}")
+            ax.legend(fontsize=8, frameon=False)
+
+        ax.set_xlabel(xlabel, fontsize=11)
+        ax.set_ylabel(ylabel, fontsize=11)
+        ax.grid(alpha=0.2, linestyle=":")
+        fig.tight_layout()
+        return fig, ax
+
+    # ==================================================================
+    # 热力图 (相关性矩阵)
+    # ==================================================================
+
+    def heatmap(self, matrix, labels, cmap="RdBu_r", vmin=-1, vmax=1, annot=True):
+        """相关热力图 — RdBu_r 配色"""
+        n = len(labels)
+        fig, ax = self._fig(figsize=(n*1.1 + 1, n*0.9 + 0.5))
+        im = ax.imshow(matrix, cmap=cmap, vmin=vmin, vmax=vmax, aspect="auto")
+        ax.set_xticks(range(n))
+        ax.set_yticks(range(n))
+        ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=8)
+        ax.set_yticklabels(labels, fontsize=8)
+        cbar = plt.colorbar(im, ax=ax, shrink=0.85, pad=0.02)
+        cbar.ax.tick_params(labelsize=7)
+
+        if annot:
+            for i in range(n):
+                for j in range(n):
+                    val = matrix[i][j] if isinstance(matrix[i][j], float) else matrix[i, j]
+                    color = "white" if abs(val) > 0.5 else "black"
+                    ax.text(j, i, f"{val:.2f}", ha="center", va="center", fontsize=7, color=color)
+
+        fig.tight_layout()
+        return fig, ax
+
+    # ==================================================================
+    # 箱线图
+    # ==================================================================
+
+    def boxplot(self, data_dict, xlabel="", ylabel=""):
+        """多组箱线图"""
+        fig, ax = self._fig(figsize=(len(data_dict)*1.5+1, 4.5))
+        colors = get_colors(len(data_dict))
+        bp = ax.boxplot(data_dict.values(), patch_artist=True, widths=0.5,
+                        medianprops={"color": "black", "linewidth": 1.2})
+
+        for patch, c in zip(bp["boxes"], colors):
+            patch.set_facecolor(c)
+            patch.set_alpha(0.7)
+
+        ax.set_xticklabels(data_dict.keys(), fontsize=9)
+        ax.set_xlabel(xlabel, fontsize=11)
+        ax.set_ylabel(ylabel, fontsize=11)
+        ax.grid(axis="y", alpha=0.2, linestyle=":")
+        fig.tight_layout()
+        return fig, ax
+
+    # ==================================================================
+    # 多面板组合图 (国赛高端用法)
+    # ==================================================================
+
+    def multi_panel(self, panels: list[dict], rows: int, cols: int,
+                    figsize=None, suptitle=None):
+        """多面板组合图
+
+        panels: [{"type":"bar","x":...,"y":...,"title":"(a) xxx"}, ...]
+        """
+        fig, axes = self._multi_fig(rows, cols, figsize)
+        flat_axes = np.atleast_1d(axes).flat
+        colors = get_colors(10)
+
+        for i, panel in enumerate(panels):
+            if i >= len(flat_axes):
+                break
+            ax = flat_axes[i]
+            ptype = panel.get("type", "bar")
+            data = panel.get("data", {})
+            label = panel.get("label", f"({chr(97+i)})")
+
+            if ptype == "bar":
+                x = panel.get("x", [])
+                y = panel.get("y", [])
+                ax.bar(range(len(y)), y, color=colors[:len(y)], width=0.6,
+                       edgecolor="white", linewidth=0.5)
+                ax.set_xticks(range(len(y)))
+                ax.set_xticklabels(x, fontsize=8, rotation=30 if len(x) > 5 else 0)
+            elif ptype == "line":
+                x = panel.get("x", range(len(panel.get("y", []))))
+                ax.plot(x, panel.get("y", []), color=colors[0], linewidth=2,
+                        marker="o", markersize=4, markerfacecolor="white")
+            elif ptype == "scatter":
+                ax.scatter(panel.get("x", []), panel.get("y", []),
+                          c=colors[0], alpha=0.6, s=20, edgecolors="white", linewidth=0.3)
+            elif ptype == "heatmap":
+                data = panel.get("matrix", [[]])
+                im = ax.imshow(data, cmap="RdBu_r", aspect="auto")
+                plt.colorbar(im, ax=ax, shrink=0.8)
+
+            ax.set_xlabel(panel.get("xlabel", ""), fontsize=9)
+            ax.set_ylabel(panel.get("ylabel", ""), fontsize=9)
+            ax.set_title(label, fontsize=10, fontweight="bold", loc="left")
+            ax.grid(alpha=0.2, linestyle=":")
+
+        if suptitle:
+            fig.suptitle(suptitle, fontsize=12, fontweight="bold", y=1.01)
+
+        fig.tight_layout()
+        return fig, axes
+
+    # ==================================================================
+    # Save & Cleanup
+    # ==================================================================
+
+    def save(self, fig, path, dpi=300):
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(str(path), dpi=dpi, bbox_inches="tight")
+        fig.savefig(str(path), dpi=dpi, bbox_inches="tight", facecolor="white", edgecolor="none")
         return path
 
-    def save_all(self, output_dir: str | Path) -> list[Path]:
-        """保存所有图表。"""
-        out = Path(output_dir)
-        paths = []
-        for i, fig in enumerate(self._figures):
-            p = out / f"figure_{i+1:03d}.pdf"
-            paths.append(self.save(fig, p))
-        return paths
-
-    def close_all(self) -> None:
-        """关闭所有图表。"""
-        import matplotlib.pyplot as plt
-        for _ in self._figures:
-            plt.close()
+    def close_all(self):
+        for fig in self._figures:
+            plt.close(fig)
         self._figures.clear()
-
-    # =====================================================================
-    # 装饰
-    # =====================================================================
-
-    def _decorate(self, ax, xlabel: str, ylabel: str, title: str) -> None:
-        """统一装饰 axes。"""
-        if xlabel:
-            ax.set_xlabel(xlabel)
-        if ylabel:
-            ax.set_ylabel(ylabel)
-        if title:
-            ax.set_title(title, fontsize=12, fontweight="bold")
-        ax.tick_params(direction="in")
