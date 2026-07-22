@@ -664,6 +664,255 @@ Return JSON:
 
         return self._call_llm_json(system, user)
 
+    # ================================================================
+    # AI 指令执行器 — 真正操作数据
+    # ================================================================
+
+    def execute_fix(self, fix_plan: dict, data_files: dict, data_profiles: dict,
+                    load_full_fn) -> dict:
+        """执行 AI 修正指令 — 加载数据、关联表、聚合、求解"""
+        import pandas as pd
+        import numpy as np
+        from mathmodel.models import EvaluationSolver, StatsSolver, OptimizationSolver
+
+        results = {}
+        evaluator = EvaluationSolver()
+        stats_solver = StatsSolver()
+        opt = OptimizationSolver()
+
+        for fix in fix_plan.get("fixes", []):
+            sp_id = fix.get("sub_problem_id", 0)
+            solver_type = fix.get("solver_type", "")
+            files_needed = fix.get("files", fix.get("data_file", []))
+            if isinstance(files_needed, str):
+                files_needed = [files_needed]
+            processing = fix.get("data_processing", "")
+            col_info = fix.get("columns_for_solver", {})
+            params = fix.get("solver_params", {})
+
+            print(f"  [AI-Exec] Q{sp_id}: loading {files_needed}...")
+
+            # Step 1: Load all needed data files (fuzzy match + full load)
+            dfs = {}
+            for fname in files_needed:
+                fname = str(fname).strip()
+                # Fuzzy match: extract key words (附件1, 附件2, etc)
+                import re
+                fn_key = re.sub(r'[（(]\d+[）)]', '', fname).replace('.xlsx','').replace('.csv','').strip()
+                fn_num = re.search(r'(\d+)', fname)
+                fn_num = fn_num.group(1) if fn_num else ''
+
+                matched = None
+                # Try exact match
+                if fname in data_files:
+                    matched = fname
+                else:
+                    # Try matching by number (附件1, 附件2...)
+                    for k in data_files:
+                        k_num = re.search(r'(\d+)', k)
+                        k_num = k_num.group(1) if k_num else ''
+                        if fn_num and fn_num == k_num:
+                            matched = k
+                            break
+                        # Try keyword overlap
+                        if any(w in k for w in fn_key.split() if len(w) > 1):
+                            matched = k
+                            break
+
+                if matched:
+                    df = data_files[matched]
+                    profile = data_profiles.get(matched, {})
+                    # Always try full load for medium+ files
+                    if profile.get('size_category', 'small') != 'small' and df.shape[0] <= 500:
+                        try:
+                            full = load_full_fn(matched)
+                            if full is not None and full.shape[0] > df.shape[0]:
+                                df = full
+                                data_files[matched] = full  # cache the full data
+                                print(f"  [AI-Exec]     Full load: {matched} -> {df.shape[0]} rows")
+                        except Exception as e:
+                            print(f"  [AI-Exec]     Full load failed for {matched}: {e}")
+                    dfs[matched] = df
+                    print(f"  [AI-Exec]     {fname} -> {matched} ({df.shape[0]} rows)")
+                else:
+                    print(f"  [AI-Exec]     NOT FOUND: {fname} (available: {list(data_files.keys())[:5]})")
+
+            if not dfs:
+                print(f"  [AI-Exec] Q{sp_id}: files not found: {files_needed}")
+                continue
+
+            # Step 2: Execute data processing instructions from AI
+            result_df = None
+
+            # Check if AI specified a merge
+            join_keys = fix.get("join_keys", fix.get("join_instructions", ""))
+            if len(dfs) >= 2:
+                # AI specified how to join
+                df_list = list(dfs.values())
+                result_df = df_list[0]
+
+                for i, df2 in enumerate(df_list[1:], 1):
+                    # Find common columns for merging
+                    common = [c for c in result_df.columns if c in df2.columns
+                              and c not in ['Unnamed: 0', 'index']]
+                    if common:
+                        try:
+                            result_df = result_df.merge(df2, on=common[0], how='left',
+                                                        suffixes=('', f'_dup{i}'))
+                            # Drop duplicate columns
+                            dup_cols = [c for c in result_df.columns if '_dup' in str(c)]
+                            result_df = result_df.drop(columns=dup_cols)
+                            print(f"  [AI-Exec]     Merged on '{common[0]}': {result_df.shape}")
+                        except Exception as e:
+                            print(f"  [AI-Exec]     Merge failed: {e}")
+
+            if result_df is None:
+                result_df = list(dfs.values())[0]
+
+            # Step 3: Aggregate if AI specified
+            if processing and 'group' in processing.lower():
+                group_col = col_info.get("group_col")
+                agg_col = col_info.get("value_col")
+                if group_col and agg_col and group_col in result_df.columns:
+                    result_df = result_df.groupby(group_col)[agg_col].sum().reset_index()
+                    result_df.columns = ['项目', '数值']
+                    print(f"  [AI-Exec]     Aggregated: {result_df.shape[0]} groups")
+
+            # Also try date aggregation if date column exists
+            date_cols = [c for c in result_df.columns if '日期' in str(c) or 'date' in str(c).lower()]
+            if date_cols and processing and 'aggregate' in processing.lower():
+                try:
+                    result_df[date_cols[0]] = pd.to_datetime(result_df[date_cols[0]], errors='coerce')
+                    num_cols = result_df.select_dtypes(include=np.number).columns.tolist()
+                    if num_cols:
+                        result_df = result_df.groupby(date_cols[0])[num_cols].sum()
+                        print(f"  [AI-Exec]     Date aggregated: {result_df.shape}")
+                except Exception:
+                    pass
+
+            if result_df is None or result_df.empty:
+                print(f"  [AI-Exec] Q{sp_id}: no data after processing")
+                continue
+
+            # Step 4: Detect columns with AI help
+            numeric = result_df.select_dtypes(include=np.number)
+            if numeric.empty:
+                print(f"  [AI-Exec] Q{sp_id}: no numeric columns")
+                continue
+
+            cols = numeric.columns.tolist()
+            ai_cost = col_info.get("cost_col", "")
+            ai_benefit = col_info.get("benefit_col", "")
+
+            # Exclude ID columns
+            id_cols = set(params.get("id_columns", col_info.get("id_columns", [])))
+            valid_cols = [c for c in cols if c not in id_cols]
+
+            if ai_cost and ai_cost in cols:
+                cost_col = ai_cost
+            else:
+                cost_col = next((c for c in valid_cols if '成本' in str(c) or '价格' in str(c) or '批发' in str(c)), valid_cols[0] if valid_cols else cols[0])
+
+            if ai_benefit and ai_benefit in cols:
+                benefit_col = ai_benefit
+            else:
+                benefit_col = next((c for c in valid_cols if '销量' in str(c) or '收益' in str(c) or '销售' in str(c) or '利润' in str(c)), valid_cols[-1] if len(valid_cols) > 1 else cols[-1])
+
+            print(f"  [AI-Exec]     cost={cost_col}, benefit={benefit_col}")
+
+            # Step 5: Run solver
+            if solver_type in ("evaluation", "评价"):
+                matrix = numeric[valid_cols].values.astype(float) if valid_cols else numeric.values.astype(float)
+                if matrix.shape[1] < 2:
+                    continue
+                impacts = [1] * matrix.shape[1]
+                for j, c in enumerate(numeric.columns):
+                    if any(kw in str(c) for kw in ['成本', '费用', '损耗', '率', '环境']):
+                        impacts[j] = -1
+                ew = evaluator.entropy_weight(matrix)
+                res = evaluator.topsis(matrix, weights=ew["weights"], impacts=impacts)
+                labels = result_df.iloc[:, 0].tolist() if not pd.api.types.is_numeric_dtype(result_df.iloc[:, 0]) else [f"方案{i+1}" for i in range(len(result_df))]
+                best_idx = int(np.argmax(res["scores"]))
+                results[f"sub_{sp_id}"] = {
+                    "labels": labels,
+                    "scores": [round(float(s), 4) for s in res["scores"]],
+                    "rank": [int(r) for r in res["rank"]],
+                    "weights": {str(c): round(float(w), 4) for c, w in zip(numeric.columns, ew["weights"])},
+                    "summary": f"最优: {labels[best_idx]} (得分: {max(res['scores']):.4f})",
+                }
+                print(f"  [AI-Exec]     TOPSIS done: best={labels[best_idx]}")
+
+            elif solver_type in ("prediction", "预测"):
+                data_series = numeric[benefit_col].dropna().tolist()
+                if len(data_series) < 4:
+                    data_series = numeric.iloc[:, 0].dropna().tolist()
+                if len(data_series) >= 4:
+                    pred = stats_solver.grey_forecast(data_series, forecast_steps=3)
+                    results[f"sub_{sp_id}"] = {
+                        "original": data_series,
+                        "fitted": [round(v, 4) for v in pred["fitted"]],
+                        "forecast": [round(v, 4) for v in pred["forecast"]],
+                        "mape": round(pred["mape"], 2),
+                        "grade": pred["grade"],
+                        "params": pred["params"],
+                        "summary": f"MAPE={pred['mape']:.2f}% [{pred['grade']}], 预测: {[round(v,1) for v in pred['forecast']]}",
+                    }
+                    print(f"  [AI-Exec]     GM(1,1): MAPE={pred['mape']:.2f}%")
+
+            elif solver_type in ("optimization", "优化"):
+                costs = numeric[cost_col].values.astype(float).tolist()
+                benefits = numeric[benefit_col].values.astype(float).tolist()
+                budget_val = params.get("budget", sum(costs) * 0.6)
+
+                # 0-1 knapsack greedy
+                ratios = [(benefits[i] / costs[i] if costs[i] > 0 else 0, i) for i in range(min(len(costs), 30))]
+                ratios.sort(key=lambda x: -x[0])
+                selected_idx = []; remaining = budget_val; total_cost = 0; total_benefit = 0
+                for ratio, idx in ratios:
+                    if costs[idx] <= remaining:
+                        selected_idx.append(idx)
+                        remaining -= costs[idx]
+                        total_cost += costs[idx]
+                        total_benefit += benefits[idx]
+
+                labels = result_df.iloc[:, 0].tolist() if not pd.api.types.is_numeric_dtype(result_df.iloc[:, 0]) else [f"项目{i+1}" for i in range(len(result_df))]
+                selected_labels = [labels[i] for i in selected_idx]
+                results[f"sub_{sp_id}"] = {
+                    "selection": [str(l) for l in selected_labels],
+                    "total_cost": round(total_cost, 1),
+                    "total_population": round(total_benefit, 1),
+                    "budget": round(budget_val, 1),
+                    "solution": [1 if i in selected_idx else 0 for i in range(len(costs))],
+                    "costs": costs, "benefits": benefits,
+                    "labels_all": labels,
+                    "summary": f"选择 {len(selected_labels)} 项, 成本 {total_cost:.1f}/{budget_val:.1f}",
+                }
+                print(f"  [AI-Exec]     Optimization: {len(selected_idx)} selected, cost={total_cost:.1f}")
+
+            elif solver_type in ("statistics", "统计"):
+                numeric = result_df.select_dtypes(include=np.number)
+                if numeric.shape[1] >= 2:
+                    corr = numeric.corr()
+                    corr_matrix = corr.values
+                    cols_list = numeric.columns.tolist()
+                    top = []
+                    for i in range(len(cols_list)):
+                        for j in range(i+1, len(cols_list)):
+                            top.append({"pair": (cols_list[i], cols_list[j]), "correlation": round(float(corr_matrix[i][j]), 4)})
+                    top.sort(key=lambda x: -abs(x["correlation"]))
+                    results[f"sub_{sp_id}"] = {
+                        "columns": cols_list,
+                        "corr_matrix": [[round(float(v), 4) for v in row] for row in corr_matrix],
+                        "top_correlations": top[:15],
+                        "data_shape": result_df.shape,
+                        "summary": f"相关分析: {result_df.shape[0]}行×{len(cols_list)}列" + (f", 最强: {top[0]['pair'][0]}-{top[0]['pair'][1]} r={top[0]['correlation']:.3f}" if top else ""),
+                    }
+                    print(f"  [AI-Exec]     Statistics: {len(top)} correlations computed")
+                    for t in top[:3]:
+                        print(f"       {t['pair'][0]} vs {t['pair'][1]}: r={t['correlation']:.3f}")
+
+        return results
+
     def write_evaluation_section(self, sub_problems: list, results: dict) -> str:
         """AI 撰写模型评价章节"""
         system = "Write a model evaluation section for a CUMCM paper in Chinese academic style."

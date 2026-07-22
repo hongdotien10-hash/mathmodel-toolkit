@@ -20,7 +20,7 @@ from mathmodel.utils import set_seed, Timer
 from mathmodel.analyzer import ProblemClassifier, ModelKnowledgeBase
 from mathmodel.models import EvaluationSolver, StatsSolver, OptimizationSolver
 from mathmodel.sensitivity import SensitivityAnalyzer
-from mathmodel.visualization import Plotter, set_style
+from mathmodel.visualization import Plotter, set_style, get_colors
 from mathmodel.paper.word_writer import generate_paper
 
 set_seed(42)
@@ -174,7 +174,8 @@ def main():
             ai_clean = AIDrivenPipeline(api_key=cfg_c.api_key, model=cfg_c.model)
             clean_plan = ai_clean.clean_data_with_ai(problem_text, data_profiles)
 
-            # Execute cleaning on actual data
+            # Execute cleaning on actual data (with fuzzy file matching)
+            import re
             cleaned_count = 0
             for issue in clean_plan.get("issues_found", []):
                 if issue.get("severity") in ("critical", "high"):
@@ -183,8 +184,19 @@ def main():
                     action = issue.get("fix_action", "")
                     params = issue.get("fix_params", {})
 
-                    if fname in data_files:
-                        df = data_files[fname]
+                    # Fuzzy match file name
+                    fn_num = re.search(r'(\d+)', fname)
+                    fn_num = fn_num.group(1) if fn_num else ''
+                    matched_key = fname if fname in data_files else None
+                    if not matched_key:
+                        for k in data_files:
+                            k_num = re.search(r'(\d+)', k)
+                            if fn_num and k_num and fn_num == k_num.group(1):
+                                matched_key = k
+                                break
+
+                    if matched_key:
+                        df = data_files[matched_key]
                         try:
                             if action == "convert_type" and col in df.columns:
                                 df[col] = pd.to_numeric(df[col], errors='coerce')
@@ -310,20 +322,23 @@ def main():
                     print(f"\n  [AI-Validate] ALL RESULTS VALID!")
                     break
                 else:
-                    print(f"\n  [AI-Validate] Some results invalid. Getting AI fix plan...")
+                    print(f"\n  [AI-Validate] Some results invalid. Getting AI fix plan + executing...")
                     ai_fix_plan = aiv.fix_solving_issues(problem_text, validation, data_guide)
-                    # Log fix instructions
-                    for fix in ai_fix_plan.get("fixes", []):
-                        print(f"       Q{fix.get('sub_problem_id','?')}: "
-                              f"solver={fix.get('solver_type','?')}, "
-                              f"cols={fix.get('columns_for_solver','?')}")
-                    # Clear invalid results before re-solving
+
+                    # Execute AI fixes — actually load/merge/aggregate data
+                    fixed_results = aiv.execute_fix(
+                        ai_fix_plan, data_files, data_profiles,
+                        load_full_fn=_get_full_data
+                    )
+
+                    # Merge fixed results, replacing invalid ones
                     for c in validation.get("checks", []):
                         if not c.get("valid"):
                             key = f"sub_{c.get('sub_problem_id', '?')}"
                             if key in all_results:
                                 del all_results[key]
-                                print(f"       Cleared {key} for re-solve")
+                    all_results.update(fixed_results)
+                    print(f"       Applied {len(fixed_results)} AI-executed fixes")
         except Exception as e:
             print(f"  [AI-Validate] Skipped: {e}")
             break
