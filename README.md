@@ -35,11 +35,25 @@ problems/
 
 ### 3. 一键运行
 
-```bash
-python start.py
-```
+**最简单：双击 `run.bat`**，选择 Free 或 Pro 版即可。
+
+> 或者手动运行：
+> ```bash
+> python start.py        # Free版（~2分钟）
+> python start_pro.py    # Pro版（~10-20分钟，获奖级）
+> ```
 
 论文和图表自动生成到 `output/我的赛题/`。
+
+---
+### 用什么软件打开？
+
+| 方式 | 难度 | 说明 |
+|------|------|------|
+| **双击 `run.bat`** | ⭐ 最简单 | 自动找Python，选择版本，一键运行 |
+| **终端运行** | ⭐⭐ | `Win+R` → `cmd` → `python start.py` |
+| **VS Code** | ⭐⭐⭐ | 装 Python 插件后按 `F5` 运行 |
+| **PyCharm** | ⭐⭐⭐ | 专业 Python IDE，右键 `Run` |
 
 ---
 
