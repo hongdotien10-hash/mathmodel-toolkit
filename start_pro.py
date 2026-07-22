@@ -23,6 +23,7 @@ from mathmodel.paper.word_writer import generate_paper
 from mathmodel.paper.latex_writer import generate_latex_paper
 from mathmodel.pro import (ModelContest, DeepSensitivity, ResultNarrator,
                            ChartSuite, ErrorDiagnostics)
+from mathmodel.pipeline.rich_progress import PhaseTracker, print_header, print_section, print_result_summary
 
 set_seed(42)
 
@@ -32,12 +33,8 @@ OUTPUT_DIR = Path(__file__).parent / "output"
 
 
 def main():
-    print("=" * 60)
-    print("  MathModel Toolkit PRO — Award-Level")
-    print("=" * 60)
-
-    # Pro features — free for everyone
-    pass
+    tracker = PhaseTracker(title="MathModel Toolkit PRO")
+    print_header("MathModel Toolkit PRO — Award-Level")
 
     # === Step 1: Scan & Load (same as free version) ===
     problem_dirs = sorted([d for d in PROBLEMS_DIR.iterdir()
@@ -82,7 +79,7 @@ def main():
 
     # === Step 2: AI Analysis (same as free) ===
     sub_problems = _analyze(problem_text, data_profiles)
-    print("\n" + "-" * 40 + "\n  Phase 1: AI Analysis\n" + "-" * 40)
+    print_section("Phase 1: AI Analysis")
     for sp in sub_problems:
         print(f"  Q{sp['id']}: [{sp['type']}] → {sp['model']} ({sp['score']:.0%}) [{sp.get('source','rule')}]")
 
@@ -95,7 +92,7 @@ def main():
     except Exception: pass
 
     # === Step 4: 🆕 PRO — Multi-Model Contest (本地或AI对比) ===
-    print("\n" + "-" * 40 + "\n  PRO Phase 2: Multi-Model Contest\n" + "-" * 40)
+    print_section("PRO Phase 2: Multi-Model Contest")
     contest_results = {}
     mc = ModelContest(api_key=api_key)  # 无API时自动用指标对比
     for sp in sub_problems:
@@ -108,7 +105,7 @@ def main():
         print("  [本地对比] 基于指标数值自动选优")
 
     # === Step 5: Solve with best models ===
-    print("\n" + "-" * 40 + "\n  Phase 3: Solving with Best Models\n" + "-" * 40)
+    print_section("Phase 3: Solving with Best Models")
     all_results = {}
     for sp in sub_problems:
         sp_id = sp["id"]
@@ -166,7 +163,7 @@ def main():
             print(f"  Q{sp_id}: Optimization done ({len(sel)} selected)")
 
     # === Step 6: 🆕 PRO — Deep Sensitivity ===
-    print("\n" + "-" * 40 + "\n  PRO Phase 4: Deep Sensitivity\n" + "-" * 40)
+    print_section("PRO Phase 4: Deep Sensitivity")
     ds = DeepSensitivity()
     sens_results = {}
     for key, val in all_results.items():
@@ -183,7 +180,7 @@ def main():
             print(f"  {key}: Tornado top={tornado['most_sensitive']}, MC CV={mc['cv']:.4f}")
 
     # === Step 7: 🆕 PRO — Error Diagnostics ===
-    print("\n" + "-" * 40 + "\n  PRO Phase 5: Error Diagnostics\n" + "-" * 40)
+    print_section("PRO Phase 5: Error Diagnostics")
     ed = ErrorDiagnostics()
     diag_results = {}
     for key, val in all_results.items():
@@ -198,7 +195,7 @@ def main():
             print(f"  {key}: MAPE={ra['mape']:.2f}%, DW={ra['dw']:.3f}, Normal={ra['is_normal']}")
 
     # === Step 8: 🆕 PRO — Chart Suite ===
-    print("\n" + "-" * 40 + "\n  PRO Phase 6: Professional Chart Suites\n" + "-" * 40)
+    print_section("PRO Phase 6: Professional Chart Suites")
     cs = ChartSuite()
     for key, val in all_results.items():
         if "forecast" in val and "fitted" in val:
@@ -219,7 +216,7 @@ def main():
     # === Step 9: 🆕 PRO — Result-Driven Writing ===
     ai_content = {}
     if api_key:
-        print("\n" + "-" * 40 + "\n  PRO Phase 7: Result-Driven Writing\n" + "-" * 40)
+        print_section("PRO Phase 7: Result-Driven Writing")
         rn = ResultNarrator(api_key=api_key)
         for sp in sub_problems:
             sp_id = sp["id"]
@@ -244,7 +241,7 @@ def main():
             print(f"  AI writing failed: {e}")
 
     # === Step 10: Generate Papers ===
-    print("\n" + "-" * 40 + "\n  Phase 8: Paper Generation\n" + "-" * 40)
+    print_section("Phase 8: Paper Generation")
     import datetime
     ts = datetime.datetime.now().strftime("%H%M%S")
     paper_path = generate_paper(
@@ -268,10 +265,10 @@ def main():
                                    for k, v in sens_results.items()}},
                   f, ensure_ascii=False, indent=2, default=str)
 
-    print(f"\n{'='*60}\n  PRO DONE!\n{'='*60}")
-    print(f"  Paper: {paper_path}")
+    tracker.finish()
+    print_result_summary(sub_problems, all_results)
+    print_header(f"PRO DONE! Paper -> {paper_path}")
     print(f"  Figures: {fig_dir}")
-    print(f"{'='*60}")
 
 
 def _analyze(problem_text, data_profiles):
