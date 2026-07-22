@@ -22,6 +22,7 @@ from mathmodel.models import EvaluationSolver, StatsSolver, OptimizationSolver
 from mathmodel.sensitivity import SensitivityAnalyzer
 from mathmodel.visualization import Plotter, set_style, get_colors
 from mathmodel.paper.word_writer import generate_paper
+from mathmodel.paper.latex_writer import generate_latex_paper
 
 set_seed(42)
 
@@ -256,56 +257,76 @@ def main():
 
     all_results = {}
     max_solve_rounds = 3
-    ai_fix_plan = {}  # AI fix instructions, applied to solvers
 
     for solve_round in range(1, max_solve_rounds + 1):
         print(f"\n  === Solve Round {solve_round}/{max_solve_rounds} ===")
 
-        # ---- Solve all sub-problems (with AI hints if available) ----
+        # ---- Solve all sub-problems ----
         for sp in sub_problems:
             ptype = sp["type"]
             sp_id = sp["id"]
-            # Skip if already solved and valid in this round
             if f"sub_{sp_id}" in all_results:
                 continue
 
-            # Get AI fix hints for this sub-problem
-            sp_fixes = {}
-            for fix in ai_fix_plan.get("fixes", []):
-                if fix.get("sub_problem_id") == sp_id:
-                    sp_fixes = fix
-                    break
-            # Also try data_guide hints
+            # Build AI hints from data_guide
             dg_hints = {}
             for pp in data_guide.get("per_problem", []):
                 if pp.get("sub_problem_id") == sp_id:
                     dg_hints = pp
                     break
-            ai_hints = {**dg_hints, **sp_fixes}
 
             print(f"\n  >> Q{sp_id}: {sp['model']}")
 
-            if ptype == "评价" and data_files:
+            # ---- TRY AI EXECUTOR FIRST when data guide says needs multi-file ----
+            ai_executed = False
+            if dg_hints and len(dg_hints.get("files", [])) >= 2:
+                try:
+                    from api.config import APIConfig
+                    cfg_ex = APIConfig()
+                    if cfg_ex.is_configured:
+                        from mathmodel.pipeline.smart_orchestrator import AIDrivenPipeline
+                        ai_ex = AIDrivenPipeline(api_key=cfg_ex.api_key, model=cfg_ex.model)
+                        # Convert data_guide hints to fix format
+                        fix_plan = {
+                            "fixes": [{
+                                "sub_problem_id": sp_id,
+                                "solver_type": ptype,
+                                "files": dg_hints.get("files", []),
+                                "columns_for_solver": {
+                                    "cost_col": dg_hints.get("feature_columns", [None])[0] if dg_hints.get("feature_columns") else None,
+                                    "benefit_col": dg_hints.get("target_columns", [None])[0] if dg_hints.get("target_columns") else None,
+                                    "id_columns": dg_hints.get("id_columns", []),
+                                },
+                                "data_processing": dg_hints.get("aggregation", ""),
+                                "join_keys": dg_hints.get("join_instructions", ""),
+                                "solver_params": {"id_columns": dg_hints.get("id_columns", [])},
+                            }]
+                        }
+                        fixed = ai_ex.execute_fix(fix_plan, data_files, data_profiles,
+                                                   load_full_fn=_get_full_data)
+                        if fixed.get(f"sub_{sp_id}"):
+                            all_results.update(fixed)
+                            ai_executed = True
+                            print(f"     [AI-Exec] Direct solve, multi-file merge")
+                            continue
+                except Exception as e:
+                    print(f"     [AI-Exec] Failed: {e}")
+
+            # ---- Fallback: local solvers with AI hints ----
+            if not ai_executed:
                 with Timer() as t:
-                    _solve_evaluation(sp, data_files, fig_dir, all_results, ai_hints)
-                print(f"     Time: {t.duration}")
-            elif ptype == "预测" and data_files:
-                with Timer() as t:
-                    _solve_prediction(sp, data_files, fig_dir, all_results, ai_hints)
-                print(f"     Time: {t.duration}")
-            elif ptype == "优化" and data_files:
-                with Timer() as t:
-                    _solve_optimization(sp, data_files, fig_dir, all_results, ai_hints)
-                print(f"     Time: {t.duration}")
-            elif ptype == "统计" and data_files:
-                with Timer() as t:
-                    _solve_statistics(sp, data_files, fig_dir, all_results, ai_hints)
-                print(f"     Time: {t.duration}")
-            elif ptype == "综合" and data_files:
-                with Timer() as t:
-                    _solve_statistics(sp, data_files, fig_dir, all_results, ai_hints)
-                    if f"sub_{sp_id}" not in all_results:
-                        _solve_optimization(sp, data_files, fig_dir, all_results, ai_hints)
+                    if ptype == "评价" and data_files:
+                        _solve_evaluation(sp, data_files, fig_dir, all_results, dg_hints)
+                    elif ptype == "预测" and data_files:
+                        _solve_prediction(sp, data_files, fig_dir, all_results, dg_hints)
+                    elif ptype == "优化" and data_files:
+                        _solve_optimization(sp, data_files, fig_dir, all_results, dg_hints)
+                    elif ptype == "统计" and data_files:
+                        _solve_statistics(sp, data_files, fig_dir, all_results, dg_hints)
+                    elif ptype == "综合" and data_files:
+                        _solve_statistics(sp, data_files, fig_dir, all_results, dg_hints)
+                        if f"sub_{sp_id}" not in all_results:
+                            _solve_optimization(sp, data_files, fig_dir, all_results, dg_hints)
                 print(f"     Time: {t.duration}")
 
         # ---- AI validate results ----
@@ -322,23 +343,16 @@ def main():
                     print(f"\n  [AI-Validate] ALL RESULTS VALID!")
                     break
                 else:
-                    print(f"\n  [AI-Validate] Some results invalid. Getting AI fix plan + executing...")
+                    print(f"\n  [AI-Validate] {sum(1 for c in validation.get('checks',[]) if not c.get('valid'))} invalid. AI fix + execute...")
                     ai_fix_plan = aiv.fix_solving_issues(problem_text, validation, data_guide)
-
-                    # Execute AI fixes — actually load/merge/aggregate data
-                    fixed_results = aiv.execute_fix(
-                        ai_fix_plan, data_files, data_profiles,
-                        load_full_fn=_get_full_data
-                    )
-
-                    # Merge fixed results, replacing invalid ones
+                    fixed_results = aiv.execute_fix(ai_fix_plan, data_files, data_profiles,
+                                                     load_full_fn=_get_full_data)
                     for c in validation.get("checks", []):
                         if not c.get("valid"):
                             key = f"sub_{c.get('sub_problem_id', '?')}"
-                            if key in all_results:
-                                del all_results[key]
+                            if key in all_results: del all_results[key]
                     all_results.update(fixed_results)
-                    print(f"       Applied {len(fixed_results)} AI-executed fixes")
+                    print(f"       Applied {len(fixed_results)} fixes")
         except Exception as e:
             print(f"  [AI-Validate] Skipped: {e}")
             break
@@ -531,7 +545,18 @@ def main():
         figures_dir=str(fig_dir),
         ai_content=ai_content,
     )
-    print(f"  Paper: {paper_path}")
+    print(f"  Word: {paper_path}")
+
+    # ---- Also generate LaTeX paper ----
+    try:
+        tex_path = generate_latex_paper(
+            str(out_dir / "latex"), problem_text,
+            {"sub_problems": sub_problems}, all_results,
+            str(fig_dir), ai_content
+        )
+        print(f"  LaTeX: {tex_path}")
+    except Exception as e:
+        print(f"  LaTeX: skipped ({e})")
 
     # Save results
     with open(out_dir / "results.json", "w", encoding="utf-8") as f:

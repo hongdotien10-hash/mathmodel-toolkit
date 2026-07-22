@@ -325,6 +325,60 @@ class EvaluationSolver:
         }
 
     # =====================================================================
+    # AHP 层次分析法 (完整实现)
+    # =====================================================================
+
+    def ahp_full(self, criteria_names: list[str], alternatives: list[str],
+                 pairwise_matrices: dict) -> dict:
+        """完整 AHP：多级层次结构
+
+        Args:
+            criteria_names: 准则层名称列表
+            alternatives: 方案层名称列表
+            pairwise_matrices: {"criteria": 准则层成对比较矩阵, "criterion_0": 方案层对准则0的比较矩阵, ...}
+
+        Returns:
+            dict: 包含各层权重、一致性检验、综合得分和排名
+        """
+        n_criteria = len(criteria_names)
+        n_alt = len(alternatives)
+
+        # Step 1: 准则层权重
+        criteria_matrix = np.array(pairwise_matrices.get("criteria", []), dtype=float)
+        if criteria_matrix.size == 0:
+            criteria_matrix = np.ones((n_criteria, n_criteria))
+        criteria_result = self.ahp(criteria_matrix)
+        criteria_weights = criteria_result["weights"]
+
+        # Step 2: 方案层对每个准则的权重矩阵
+        alt_weights_matrix = np.zeros((n_alt, n_criteria))
+        for j in range(n_criteria):
+            key = f"criterion_{j}"
+            if key in pairwise_matrices:
+                mat = np.array(pairwise_matrices[key], dtype=float)
+            else:
+                mat = np.ones((n_alt, n_alt))  # default: equal weights
+            alt_result = self.ahp(mat)
+            alt_weights_matrix[:, j] = alt_result["weights"]
+
+        # Step 3: 综合权重 = 方案权重 × 准则权重
+        final_scores = alt_weights_matrix @ criteria_weights
+
+        # 排名
+        rank = final_scores.argsort()[::-1].argsort() + 1
+
+        return {
+            "criteria_weights": {name: round(float(w), 4) for name, w in zip(criteria_names, criteria_weights)},
+            "alternative_weights": {alt: [round(float(v), 4) for v in row]
+                                    for alt, row in zip(alternatives, alt_weights_matrix)},
+            "final_scores": {alt: round(float(s), 4) for alt, s in zip(alternatives, final_scores)},
+            "rank": {alt: int(r) for alt, r in zip(alternatives, rank)},
+            "best": alternatives[int(np.argmax(final_scores))],
+            "cr_criteria": round(criteria_result["cr"], 4),
+            "is_consistent": criteria_result["cr"] < 0.1,
+        }
+
+    # =====================================================================
     # CRITIC 权重法
     # =====================================================================
 
