@@ -239,7 +239,8 @@ def main():
     print_section("Phase 1.6: Data Preprocessing")
 
     preprocess_report = {}
-    for name, df in data_files.items():
+    new_dfs = {}  # 收集新 DataFrame，避免迭代时修改 dict
+    for name, df in list(data_files.items()):
         try:
             n_before = len(df)
             # 1. Handle missing values
@@ -256,8 +257,8 @@ def main():
             norm = Normalizer(method="zscore")
             df_norm = norm.fit_transform(df_clean)
 
-            data_files[name] = df_clean
-            data_files[f"{name}_norm"] = df_norm  # for ML/classification models
+            new_dfs[name] = df_clean
+            new_dfs[f"{name}_norm"] = df_norm  # for ML/classification models
 
             preprocess_report[name] = {
                 "missing_filled": int(missing_count),
@@ -265,9 +266,11 @@ def main():
                 "final_rows": len(df_clean),
                 "normalized_cols": len(df_norm.select_dtypes(include=np.number).columns),
             }
-            print(f"  [{name}] missing={missing_count} outliers={n_removed} → {len(df_clean)} rows")
+            print(f"  [{name}] missing={missing_count} outliers={n_removed} -> {len(df_clean)} rows")
         except Exception as e:
             print(f"  [{name}] preprocessing skipped: {e}")
+            new_dfs[name] = df  # keep original
+    data_files.update(new_dfs)
 
     # ================================================================
     # Step 2.5: AI 指导数据加载
@@ -633,12 +636,14 @@ def _solve_evaluation(sp, data_files, fig_dir, results, ai_hints=None):
     # Find mid-sized structured data (not huge transaction tables)
     best_name, best_df = None, None
     for name, df in data_files.items():
+        if name.endswith("_norm"): continue
         num_cols = df.select_dtypes(include=np.number).shape[1]
         if 3 <= num_cols <= 20 and df.shape[0] < 1000:
             best_name, best_df = name, df
             break
     if best_df is None:
         for name, df in data_files.items():
+            if name.endswith("_norm"): continue
             if df.select_dtypes(include=np.number).shape[1] >= 3:
                 best_name, best_df = name, df
                 break
@@ -685,6 +690,7 @@ def _solve_prediction(sp, data_files, fig_dir, results, ai_hints=None):
     # Find time-series-like data: fewer columns, time-like index
     best_name, best_df = None, None
     for name, df in data_files.items():
+        if name.endswith("_norm"): continue
         if df.select_dtypes(include=np.number).shape[1] <= 3 and df.shape[0] >= 4:
             # Check if there's a column that looks like dates
             for col in df.columns:
@@ -697,6 +703,7 @@ def _solve_prediction(sp, data_files, fig_dir, results, ai_hints=None):
     # Fallback: any small table
     if best_df is None:
         for name, df in data_files.items():
+            if name.endswith("_norm"): continue
             if df.shape[0] <= 1000 and df.select_dtypes(include=np.number).shape[1] >= 1:
                 best_name, best_df = name, df
                 break
@@ -779,8 +786,8 @@ def _solve_optimization(sp, data_files, fig_dir, results, ai_hints=None):
     """优化类：自动聚合大数据后再做优化"""
     # Try to aggregate large transaction data into optimization-ready form
     # Look for sales data (large) + price/cost data
-    large_dfs = {k: v for k, v in data_files.items() if v.shape[0] > 1000}
-    small_dfs = {k: v for k, v in data_files.items() if v.shape[0] <= 1000}
+    large_dfs = {k: v for k, v in data_files.items() if v.shape[0] > 1000 and not k.endswith("_norm")}
+    small_dfs = {k: v for k, v in data_files.items() if v.shape[0] <= 1000 and not k.endswith("_norm")}
 
     best_name, best_df = None, None
 
@@ -958,6 +965,7 @@ def _solve_statistics(sp, data_files, fig_dir, results, ai_hints=None):
     # Try to load full data for large transaction files
     best_name, best_df = None, None
     for name, df in data_files.items():
+        if name.endswith("_norm"): continue
         num = df.select_dtypes(include=np.number).shape[1]
         if num >= 2 and df.shape[0] > 100:
             # If large file, try to load full data for better analysis

@@ -329,6 +329,7 @@ def _analyze(problem_text, data_profiles):
 
 def _find_df(data_files, ptype):
     for k, v in data_files.items():
+        if k.endswith("_norm"): continue
         if v.select_dtypes(include=np.number).shape[1] >= 2: return v
     return list(data_files.values())[0] if data_files else None
 
