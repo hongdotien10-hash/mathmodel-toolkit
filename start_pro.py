@@ -30,27 +30,14 @@ PROBLEMS_DIR = Path(__file__).parent / "problems"
 OUTPUT_DIR = Path(__file__).parent / "output"
 
 
-def check_license():
-    """简单授权检查：.pro_key文件或环境变量"""
-    key_file = Path(__file__).parent / ".pro_key"
-    env_key = __import__('os').environ.get("MATHMODEL_PRO_KEY", "")
-    if key_file.exists():
-        return True
-    if env_key:
-        key_file.write_text(env_key)
-        return True
-    return False
-
 
 def main():
     print("=" * 60)
     print("  MathModel Toolkit PRO — Award-Level")
     print("=" * 60)
 
-    if not check_license():
-        print("\n  [INFO] Free trial mode — 3 uses remaining")
-        print("  [INFO] Get Pro: https://github.com/hongdotien10-hash/mathmodel-toolkit")
-        print()
+    # Pro features — free for everyone
+    pass
 
     # === Step 1: Scan & Load (same as free version) ===
     problem_dirs = sorted([d for d in PROBLEMS_DIR.iterdir()
