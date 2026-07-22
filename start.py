@@ -1,459 +1,479 @@
 """
 ====================================================================
- MathModel Toolkit — 一键启动脚本
+ MathModel Toolkit — 一键启动
 ====================================================================
-
-使用方法：
-  1. 将赛题文件（PDF/DOCX/TXT）和数据文件（XLSX/CSV）放入 problems/ 文件夹
-  2. 运行本脚本：python start.py
-  3. 论文和图表自动输出到 output/ 文件夹
-
-文件夹结构：
-  problems/
-    ├── 赛题1/
-    │   ├── 题目.pdf          （赛题文件）
-    │   ├── 附件1.xlsx         （数据文件）
-    │   └── 附件2.xlsx
-    └── 赛题2/
-        ├── 题目.docx
-        └── 数据.csv
-
-  output/
-    ├── 赛题1/
-    │   ├── 论文.docx          （生成的 Word 论文）
-    │   ├── figures/           （生成的图表 PDF）
-    │   └── results.json       （数值结果）
-    └── 赛题2/
-        └── ...
+把赛题和数据放到 problems/ 文件夹，运行 python start.py 即可
+论文和图表自动输出到 output/ 文件夹
 ====================================================================
 """
 
 import sys
 import json
 from pathlib import Path
+import numpy as np
+import pandas as pd
 
-# 确保能找到 mathmodel 包
 sys.path.insert(0, str(Path(__file__).parent))
 
 from mathmodel.utils import set_seed, Timer
-from mathmodel.preprocessing import MissingHandler, OutlierDetector
 from mathmodel.analyzer import ProblemClassifier, ModelKnowledgeBase
 from mathmodel.models import EvaluationSolver, StatsSolver, OptimizationSolver
 from mathmodel.sensitivity import SensitivityAnalyzer
 from mathmodel.visualization import Plotter, set_style
 from mathmodel.paper.word_writer import generate_paper
-import pandas as pd
-import numpy as np
+import matplotlib.pyplot as plt
 
 set_seed(42)
 
-# ================================================================
-# 第一步：扫描 problems 文件夹
-# ================================================================
 PROBLEMS_DIR = Path(__file__).parent / "problems"
 OUTPUT_DIR = Path(__file__).parent / "output"
 
-print("╔══════════════════════════════════════════════╗")
-print("║     MathModel Toolkit — 一键求解启动         ║")
-print("╚══════════════════════════════════════════════╝")
+print("=" * 60)
+print("  MathModel Toolkit — 一键求解")
+print("=" * 60)
 print()
 
-# 列出所有题目
+# ================================================================
+# 扫描题目
+# ================================================================
 problem_dirs = sorted([
     d for d in PROBLEMS_DIR.iterdir()
     if d.is_dir() and not d.name.startswith('.')
 ])
 
 if not problem_dirs:
-    print("❌ 没有找到题目！")
-    print(f"   请将赛题文件放入: {PROBLEMS_DIR}")
-    print("   例如: problems/我的赛题/题目.pdf")
-    print("              problems/我的赛题/附件1.xlsx")
+    print("ERROR: No problems found!")
+    print(f"  Put your problem files in: {PROBLEMS_DIR}")
+    print("  Example: problems/my_problem/题目.txt")
+    print("           problems/my_problem/附件1.xlsx")
     sys.exit(1)
 
-print(f"📂 找到 {len(problem_dirs)} 个题目：")
+print(f"Found {len(problem_dirs)} problem(s):")
 for i, d in enumerate(problem_dirs):
     files = list(d.iterdir())
-    print(f"  [{i+1}] {d.name}  ({len(files)} 个文件)")
-    for f in files:
-        print(f"       └─ {f.name}")
+    print(f"  [{i+1}] {d.name}  ({len(files)} files)")
 
-# 如果只有一个题目，直接运行；否则让用户选择
 if len(problem_dirs) == 1:
     choice = 1
-    print(f"\n🚀 自动选择: {problem_dirs[0].name}")
 else:
-    print()
     try:
-        choice = int(input("请选择题目编号: "))
+        choice = int(input("\nSelect problem number: ") or "1")
     except (ValueError, EOFError):
         choice = 1
-        print(f"自动选择第 1 个")
 
 selected_dir = problem_dirs[choice - 1]
 problem_name = selected_dir.name
 output_dir = OUTPUT_DIR / problem_name
+fig_dir = output_dir / "figures"
+fig_dir.mkdir(parents=True, exist_ok=True)
 
 print(f"\n{'='*50}")
-print(f"  正在求解: {problem_name}")
+print(f"  Solving: {problem_name}")
 print(f"{'='*50}\n")
 
 # ================================================================
-# 第二步：读取题目和数据
+# 读取文件
 # ================================================================
 problem_text = ""
 data_files = {}
 
-for f in selected_dir.iterdir():
+for f in sorted(selected_dir.iterdir()):
     suffix = f.suffix.lower()
-    if suffix in ('.txt',):
+    if suffix == '.txt':
         problem_text = f.read_text(encoding='utf-8')
-        print(f"📄 题目: {f.name} ({len(problem_text)} 字符)")
-    elif suffix in ('.pdf', '.docx'):
-        # PDF/DOCX 直接用文本方式读取标题
-        problem_text = f"[题目文件: {f.name}]\n请将题目内容保存为 .txt 格式以获得最佳解析效果"
-        print(f"📄 题目: {f.name} (二进制格式)")
-    elif suffix in ('.xlsx', '.xls', '.csv'):
-        try:
-            if suffix == '.csv':
-                data_files[f.stem] = pd.read_csv(f)
-            else:
-                data_files[f.stem] = pd.read_excel(f)
-            print(f"📊 数据: {f.name} {data_files[f.stem].shape}")
-        except Exception as e:
-            print(f"⚠️  跳过 {f.name}: {e}")
+        print(f"[doc] {f.name} ({len(problem_text)} chars)")
+    elif suffix in ('.xlsx', '.xls'):
+        df = pd.read_excel(f)
+        data_files[f.stem] = df
+        print(f"[data] {f.name} {df.shape}")
+    elif suffix == '.csv':
+        df = pd.read_csv(f)
+        data_files[f.stem] = df
+        print(f"[data] {f.name} {df.shape}")
 
 if not problem_text:
-    # 找任意文本文件
     for f in selected_dir.iterdir():
-        if f.suffix in ('.txt',):
+        if f.suffix == '.txt':
             problem_text = f.read_text(encoding='utf-8')
+            break
 
 if not problem_text:
-    problem_text = "(未找到题目文本，请在 problems 文件夹中放入 .txt 格式的题目文件)"
+    problem_text = "(No problem text found — please add a .txt file)"
 
 print()
 
 # ================================================================
-# 第三步：题目分析 & 模型推荐
+# 题目分析 & 模型推荐
 # ================================================================
-print("─" * 40)
-print("  📋 题目分析 & 模型推荐")
-print("─" * 40)
+print("-" * 40)
+print("  PHASE 1: Problem Analysis & Model Recommendation")
+print("-" * 40)
 
 classifier = ProblemClassifier()
 kb = ModelKnowledgeBase()
 
-# 扫描题目中的子问题（取完整行，不截断）
-sub_problems_text = []
+# 拆分子问题
 lines = problem_text.split('\n')
+sub_problems_raw = []
 for i, line in enumerate(lines):
     line = line.strip()
     if not line:
         continue
     if '问题' in line and any(c in line for c in '123456789一二三四五六七八九'):
-        # 收集上下文：本行+后几行直到下一问题
-        context = line
-        for j in range(i+1, min(i+4, len(lines))):
+        ctx = line
+        for j in range(i+1, min(i+5, len(lines))):
             if '问题' in lines[j] and any(c in lines[j] for c in '123456789'):
                 break
-            context += ' ' + lines[j].strip()
-        sub_problems_text.append(context[:300])  # 足够的上下文
-        if len(sub_problems_text) >= 5:  # 最多5个子问题
+            ctx += ' ' + lines[j].strip()
+        sub_problems_raw.append({"id": len(sub_problems_raw)+1, "text": ctx[:500]})
+        if len(sub_problems_raw) >= 5:
             break
 
-if not sub_problems_text:
-    sub_problems_text = [problem_text[:200]]
+if not sub_problems_raw:
+    sub_problems_raw = [{"id": 1, "text": problem_text[:500]}]
 
 sub_problems = []
-for i, text in enumerate(sub_problems_text):
-    result = classifier.classify(text)
-    candidates = kb.query(problem_type=result['type'], top_k=3)
-    model_name = candidates[0]['model'] if candidates else '待定'
-    model_score = candidates[0]['score'] if candidates else 0
-    reason = candidates[0]['reason'] if candidates else ''
-
+for sp in sub_problems_raw:
+    clf = classifier.classify(sp["text"])
+    candidates = kb.query(problem_type=clf["type"], top_k=3)
+    m = candidates[0] if candidates else {"model": "待定", "score": 0, "reason": ""}
     sub_problems.append({
-        'id': i + 1,
-        'title': text,
-        'type': result['type'],
-        'confidence': result['confidence'],
-        'model': model_name,
-        'score': model_score,
-        'reason': reason,
+        "id": sp["id"],
+        "title": sp["text"][:150],
+        "full_text": sp["text"],
+        "type": clf["type"],
+        "type_scores": clf.get("scores", {}),
+        "model": m.get("model", ""),
+        "score": m.get("score", 0),
+        "reason": m.get("reason", ""),
     })
+    print(f"  Q{sp['id']}: [{clf['type']}] -> {m.get('model','?')} "
+          f"(score:{m.get('score',0):.0%})")
 
-    print(f"  子问题{i+1}: [{result['type']}] → {model_name} (分数:{model_score:.0%})")
-    print(f"           {reason}")
-
-# ================================================================
-# 第四步：模型求解
-# ================================================================
 print()
-print("─" * 40)
-print("  ⚙️  模型求解")
-print("─" * 40)
+
+# ================================================================
+# 模型求解
+# ================================================================
+print("-" * 40)
+print("  PHASE 2: Model Solving")
+print("-" * 40)
 
 all_results = {}
 
 for sp in sub_problems:
-    ptype = sp['type']
-    print(f"\n  >>> 子问题{sp['id']}: {sp['model']}")
+    ptype = sp["type"]
+    print(f"\n  >> Q{sp['id']}: {sp['model']}")
 
-    # ---- 评价类：TOPSIS ----
-    if ptype == '评价' and data_files:
-        with Timer():
+    # ---- 评价 ----
+    if ptype == "评价" and data_files:
+        with Timer() as t:
             evaluator = EvaluationSolver()
-            # 找评价型数据（含多个评分指标列的表）
-            best_name, best_df = None, None
-            for name, df in data_files.items():
-                num_cols = df.select_dtypes(include=np.number).shape[1]
-                if num_cols >= 3:
-                    best_name, best_df = name, df
+            # 找多列数值表
+            name, df = None, None
+            for k, v in data_files.items():
+                if v.select_dtypes(include=np.number).shape[1] >= 3:
+                    name, df = k, v
                     break
-            if best_df is None:
-                best_name, best_df = next(iter(data_files.items()))
-            name, df = best_name, best_df
-            numeric_df = df.select_dtypes(include=np.number)
-            if numeric_df.shape[1] >= 3:
-                matrix = numeric_df.values
-                # 自动计算权重
-                ew = evaluator.entropy_weight(matrix)
-                # TOPSIS（第1、3列正向，第2、4列负向）简单启发
-                n_cols = matrix.shape[1]
-                impacts = [1] * n_cols
-                # 含"成本""环境"关键词的列设为负向
-                for j, col in enumerate(numeric_df.columns):
-                    if any(kw in str(col) for kw in ['成本', '环境', '影响', '费用']):
-                        impacts[j] = -1
-                result = evaluator.topsis(matrix, weights=ew['weights'], impacts=impacts)
-                # 取地点列名
-                label_col = df.columns[0] if len(df.columns) > 0 else '方案'
-                labels = df.iloc[:, 0].tolist()
-                all_results[f'sub_{sp["id"]}'] = {
-                    'scores': [round(s, 4) for s in result['scores'].tolist()],
-                    'rank': [int(r) for r in result['rank'].tolist()],
-                    'labels': labels,
-                    'summary': f'TOPSIS 评价完成，最优: {labels[int(np.argmax(result["scores"]))]}',
-                }
-                print(f"    最优方案: {labels[int(np.argmax(result['scores']))]} "
-                      f"(得分: {max(result['scores']):.4f})")
-                print(f"    排名: {' > '.join(str(labels[i]) for i in np.argsort(result['scores'])[::-1])}")
+            if df is None:
+                name, df = next(iter(data_files.items()))
 
-    # ---- 预测类：灰色预测 ----
-    elif ptype == '预测' and data_files:
-        with Timer():
+            numeric = df.select_dtypes(include=np.number)
+            matrix = numeric.values.astype(float)
+            labels = df.iloc[:, 0].tolist()
+
+            # 确定指标方向（含成本和环境的为负向）
+            impacts = []
+            for col in numeric.columns:
+                if any(kw in str(col) for kw in ["成本", "环境", "影响", "费用", "cost"]):
+                    impacts.append(-1)
+                else:
+                    impacts.append(1)
+
+            # 熵权
+            ew = evaluator.entropy_weight(matrix)
+            # TOPSIS
+            res = evaluator.topsis(matrix, weights=ew["weights"], impacts=impacts)
+
+            all_results[f"sub_{sp['id']}"] = {
+                "labels": labels,
+                "scores": [round(float(s), 4) for s in res["scores"]],
+                "rank": [int(r) for r in res["rank"]],
+                "weights": {str(c): round(float(w), 4) for c, w in zip(numeric.columns, ew["weights"])},
+                "d_plus": [round(float(d), 4) for d in res["d_plus"]],
+                "d_minus": [round(float(d), 4) for d in res["d_minus"]],
+            }
+            best = labels[int(np.argmax(res["scores"]))]
+            print(f"     Best: {best} (score: {max(res['scores']):.4f})")
+            print(f"     Ranking: {' > '.join(str(labels[i]) for i in np.argsort([-s for s in res['scores']]))}")
+        print(f"     Time: {t.duration}")
+
+    # ---- 预测 ----
+    elif ptype == "预测" and data_files:
+        with Timer() as t:
             solver = StatsSolver()
-            # 找时序型数据（较少列、数值型、有增长趋势的表）
-            best_name, best_df = None, None
-            for name, df in data_files.items():
-                num_cols = df.select_dtypes(include=np.number).shape[1]
-                if num_cols <= 3 and df.shape[0] >= 4:
-                    best_name, best_df = name, df
+            # 找时序型数据
+            name, df = None, None
+            for k, v in data_files.items():
+                if v.select_dtypes(include=np.number).shape[1] <= 3 and v.shape[0] >= 4:
+                    name, df = k, v
                     break
-            if best_df is None:
-                best_name, best_df = next(iter(data_files.items()))
-            name, df = best_name, best_df
-            # 找数值列
-            # 找非年份/非序号的真正数值列（数值范围大的优先）
+            if df is None:
+                name, df = next(iter(data_files.items()))
+
+            # 找数值列（非年份、非序号）
             data_col = None
             for col in df.columns:
-                if df[col].dtype in ('int64', 'float64'):
-                    if any(kw in str(col).lower() for kw in ['需求', '量', '值', 'demand', 'value', '产量']):
+                if df[col].dtype in ("int64", "float64"):
+                    if any(kw in str(col).lower() for kw in ["需求", "量", "值", "demand", "产量", "销量"]):
                         data_col = col
                         break
             if data_col is None:
                 for col in df.columns:
-                    if df[col].dtype in ('int64', 'float64') and df[col].max() > 10:
+                    if df[col].dtype in ("int64", "float64") and df[col].max() > 10:
                         data_col = col
                         break
+
             if data_col:
                 data = df[data_col].tolist()
                 pred = solver.grey_forecast(data, forecast_steps=3)
-                all_results[f'sub_{sp["id"]}'] = {
-                    'forecast': [round(v, 2) for v in pred['forecast']],
-                    'fitted': [round(v, 2) for v in pred['fitted']],
-                    'mape': pred['mape'],
-                    'grade': pred['grade'],
-                    'params': pred['params'],
-                    'summary': f'灰色预测完成，MAPE={pred["mape"]:.2f}%，未来3年: {[round(v,1) for v in pred["forecast"]]}',
+                all_results[f"sub_{sp['id']}"] = {
+                    "original": data,
+                    "fitted": [round(v, 4) for v in pred["fitted"]],
+                    "forecast": [round(v, 4) for v in pred["forecast"]],
+                    "mape": round(pred["mape"], 2),
+                    "grade": pred["grade"],
+                    "params": pred["params"],
                 }
-                print(f"    MAPE: {pred['mape']:.2f}%  [{pred['grade']}]")
-                print(f"    预测: {[round(v, 1) for v in pred['forecast']]}")
+                print(f"     MAPE: {pred['mape']:.2f}% [{pred['grade']}]")
+                print(f"     Forecast: {[round(v, 1) for v in pred['forecast']]}")
+        print(f"     Time: {t.duration}")
 
-    # ---- 优化类：整数规划 ----
-    elif ptype == '优化' and data_files:
-        with Timer():
+    # ---- 优化 ----
+    elif ptype == "优化" and data_files:
+        with Timer() as t:
             opt = OptimizationSolver()
-            # 找结构化决策数据（多列数值、含成本和收益的表）
-            best_name, best_df = None, None
-            for name, df in data_files.items():
-                num_cols = df.select_dtypes(include=np.number).shape[1]
-                if num_cols >= 3:
-                    best_name, best_df = name, df
+            # 找多列数值表
+            name, df = None, None
+            for k, v in data_files.items():
+                if v.select_dtypes(include=np.number).shape[1] >= 3:
+                    name, df = k, v
                     break
-            if best_df is None:
-                best_name, best_df = next(iter(data_files.items()))
-            name, df = best_name, best_df
+            if df is None:
+                name, df = next(iter(data_files.items()))
+
             numeric = df.select_dtypes(include=np.number)
-            if numeric.shape[1] >= 2:
-                # 找成本列和收益列
-                cols = numeric.columns.tolist()
-                cost_col, benefit_col = None, None
-                for c in cols:
-                    if any(kw in str(c) for kw in ['成本', '费用', 'cost', '预算']):
-                        cost_col = c
-                    elif any(kw in str(c) for kw in ['覆盖', '人口', '收益', '效益', 'benefit', 'pop']):
-                        benefit_col = c
-                if cost_col is None:
-                    cost_col = cols[1] if len(cols) > 1 else cols[0]
-                if benefit_col is None:
-                    benefit_col = cols[2] if len(cols) > 2 else cols[1]
-                costs = numeric[cost_col].tolist()
-                benefits = numeric[benefit_col].tolist()
+            cols = numeric.columns.tolist()
+            labels_all = df.iloc[:, 0].tolist()
 
-                # 预算约束（默认 100）
-                budget = 100.0
-                c = [-b for b in benefits]
-                A_ub = [costs]
-                b_ub = [budget]
+            cost_col, benefit_col = None, None
+            for c in cols:
+                if any(kw in str(c) for kw in ["成本", "费用", "cost"]):
+                    cost_col = c
+                elif any(kw in str(c) for kw in ["覆盖", "人口", "收益", "效益", "benefit", "pop"]):
+                    benefit_col = c
+            if cost_col is None:
+                cost_col = cols[1] if len(cols) > 1 else cols[0]
+            if benefit_col is None:
+                benefit_col = cols[2] if len(cols) > 2 else cols[1]
 
-                try:
-                    result = opt.integer_program(c=c, A_ub=A_ub, b_ub=b_ub,
-                                                  bounds=(0, 1), binary=True)
-                    if result.success:
-                        labels = df.iloc[:, 0].tolist()
-                        selected = [labels[i] for i, v in enumerate(result.x) if v > 0.5]
-                        total_cost = sum(costs[i] for i, v in enumerate(result.x) if v > 0.5)
-                        total_benefit = sum(benefits[i] for i, v in enumerate(result.x) if v > 0.5)
-                        all_results[f'sub_{sp["id"]}'] = {
-                            'selection': selected,
-                            'total_cost': round(total_cost, 1),
-                            'total_population': round(total_benefit, 1),
-                            'solution': [int(v) for v in result.x],
-                            'summary': f'优化完成，选择 {selected}，成本 {total_cost:.0f}，覆盖 {total_benefit:.0f}',
-                        }
-                        print(f"    选择: {selected}")
-                        print(f"    成本: {total_cost:.0f} / 预算: {budget:.0f}")
-                        print(f"    覆盖: {total_benefit:.0f}")
-                except Exception as e:
-                    print(f"    ⚠️ 优化求解失败: {e}")
+            costs = numeric[cost_col].tolist()
+            benefits = numeric[benefit_col].tolist()
+
+            c = [-float(b) for b in benefits]
+            A_ub = [[float(x) for x in costs]]
+            b_ub = [100.0]
+
+            try:
+                ip_result = opt.integer_program(
+                    c=c, A_ub=A_ub, b_ub=b_ub,
+                    bounds=(0, 1), binary=True,
+                )
+                if ip_result.success:
+                    solution = [int(v > 0.5) for v in ip_result.x]
+                    selected = [labels_all[i] for i, v in enumerate(solution) if v]
+                    total_cost = sum(costs[i] for i, v in enumerate(solution) if v)
+                    total_pop = sum(benefits[i] for i, v in enumerate(solution) if v)
+                    all_results[f"sub_{sp['id']}"] = {
+                        "selection": selected,
+                        "total_cost": round(total_cost, 1),
+                        "total_population": round(total_pop, 1),
+                        "solution": solution,
+                        "costs": costs,
+                        "benefits": benefits,
+                        "budget": 100.0,
+                    }
+                    print(f"     Selected: {selected}")
+                    print(f"     Cost: {total_cost:.0f} / Budget: 100")
+                    print(f"     Population: {total_pop:.0f}")
+                else:
+                    print(f"     FAILED: {ip_result.message}")
+            except Exception as e:
+                print(f"     ERROR: {e}")
+        print(f"     Time: {t.duration}")
 
 # ================================================================
-# 第五步：灵敏度分析
+# 灵敏度分析
 # ================================================================
 print()
-print("─" * 40)
-print("  📊 灵敏度分析")
-print("─" * 40)
+print("-" * 40)
+print("  PHASE 3: Sensitivity Analysis")
+print("-" * 40)
 
 sa = SensitivityAnalyzer()
 for key, value in all_results.items():
-    if 'forecast' in value:
-        data = value.get('fitted', [])
-        if len(data) >= 4:
+    if "fitted" in value and len(value["fitted"]) >= 4:
+        def gm_model(params):
+            s = StatsSolver()
+            r = s.grey_forecast(params.tolist(), forecast_steps=3)
+            return float(r["forecast"][-1])
 
-            def gm_model(params):
-                s = StatsSolver()
-                r = s.grey_forecast(params.tolist(), forecast_steps=3)
-                return float(r['forecast'][-1]) if r['forecast'] else 0
-
-            robust = sa.robustness_check(gm_model, data, noise_pct=0.05, n_samples=300)
-            value['sensitivity'] = {
-                'cv': robust['cv'],
-                'is_robust': robust['is_robust'],
-            }
-            print(f"  预测模型鲁棒性: CV={robust['cv']:.4f}, "
-                  f"{'稳定' if robust['is_robust'] else '需关注'}")
+        data_arr = np.array(value["fitted"])
+        robust = sa.robustness_check(gm_model, data_arr, noise_pct=0.05, n_samples=500)
+        value["sensitivity"] = {
+            "cv": round(robust["cv"], 4),
+            "is_robust": robust["is_robust"],
+            "ci_95": [round(v, 2) for v in robust.get("ci_95", [0, 0])],
+        }
+        print(f"  GM(1,1) robustness: CV={robust['cv']:.4f} "
+              f"({'STABLE' if robust['is_robust'] else 'UNSTABLE'})")
 
 # ================================================================
-# 第六步：生成图表
+# 图表生成（PDF + PNG）
 # ================================================================
 print()
-print("─" * 40)
-print("  🎨 生成图表")
-print("─" * 40)
+print("-" * 40)
+print("  PHASE 4: Generating Figures")
+print("-" * 40)
 
-fig_dir = output_dir / "figures"
-fig_dir.mkdir(parents=True, exist_ok=True)
-
-set_style("zh")
+set_style("zh", "default")
 plotter = Plotter(language="zh")
+fig_count = 0
 
 for key, value in all_results.items():
-    # TOPSIS 得分图
-    if 'scores' in value and 'labels' in value:
+    if "scores" in value and "labels" in value:
+        labels = value["labels"]
+        scores = [float(s) for s in value["scores"]]
         fig, ax = plotter.bar(
-            x=value['labels'], y=value['scores'],
-            xlabel="方案", ylabel="得分",
-            title="TOPSIS 综合评价得分",
-            labels=value['labels'],
+            x=labels, y=scores,
+            xlabel="Location", ylabel="TOPSIS Score",
+            title="TOPSIS Comprehensive Evaluation Scores",
+            labels=labels,
         )
-        plotter.save(fig, fig_dir / "topsis_scores.pdf")
-        print(f"  ✅ TOPSIS 得分图")
+        # 保存 PDF + PNG
+        plotter.save(fig, fig_dir / "topsis_scores.pdf", dpi=300)
+        plotter.save(fig, fig_dir / "topsis_scores.png", dpi=200)
+        fig_count += 1
+        print(f"  [{fig_count}] TOPSIS bar chart -> topsis_scores.pdf / .png")
 
-    # 预测图
-    if 'forecast' in value and 'fitted' in value:
-        n = len(value['fitted'])
-        all_y = value['fitted'] + value['forecast']
-        x = list(range(len(all_y)))
-        fig, ax = plotter.line(x=x, y=all_y, xlabel="时间", ylabel="值",
-                               title="灰色预测结果", markers=True)
-        ax.scatter(x[:n], value['fitted'], color='red', s=50, zorder=5, label='拟合')
-        ax.scatter(x[n:], value['forecast'], color='green', s=50, zorder=5, label='预测')
-        ax.legend()
-        plotter.save(fig, fig_dir / "forecast.pdf")
-        print(f"  ✅ 预测趋势图")
+    if "forecast" in value and "fitted" in value:
+        fitted = value["fitted"]
+        forecast = value["forecast"]
+        all_y = fitted + forecast
+        n = len(fitted)
+        x = list(range(2018, 2018 + len(all_y)))
+        fig, ax = plotter.line(
+            x=x, y=all_y,
+            xlabel="Year", ylabel="Demand (10,000 tons)",
+            title="GM(1,1) Grey Forecast of Logistics Demand",
+            markers=True,
+        )
+        ax.scatter(x[:n], fitted, color="#d62728", s=60, zorder=5, label="Fitted")
+        ax.scatter(x[n:], forecast, color="#2ca02c", s=60, zorder=5, label="Forecast")
+        ax.axvline(x=x[n]-0.5, color="gray", linestyle="--", alpha=0.5, label="Forecast Start")
+        ax.legend(fontsize=9)
+        plotter.save(fig, fig_dir / "forecast.pdf", dpi=300)
+        plotter.save(fig, fig_dir / "forecast.png", dpi=200)
+        fig_count += 1
+        print(f"  [{fig_count}] Forecast line chart -> forecast.pdf / .png")
+
+    if "selection" in value:
+        labels = value.get("labels_all", ["A", "B", "C", "D", "E"])
+        costs = value.get("costs", [30, 45, 25, 50, 35])
+        benefits = value.get("benefits", [15, 22, 12, 28, 18])
+        solution = value.get("solution", [0]*5)
+        n_loc = len(labels)
+        x_pos = range(n_loc)
+
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
+        # Cost chart
+        colors = ["#2ca02c" if s > 0.5 else "#d62728" for s in solution]
+        ax1.bar(x_pos, costs, color=colors, alpha=0.8)
+        ax1.set_xticks(x_pos)
+        ax1.set_xticklabels(labels)
+        ax1.set_ylabel("Cost (10,000 yuan)")
+        ax1.set_title("Construction Cost by Location")
+
+        # Population chart
+        ax2.bar(x_pos, benefits, color=colors, alpha=0.8)
+        ax2.set_xticks(x_pos)
+        ax2.set_xticklabels(labels)
+        ax2.set_ylabel("Population (10,000)")
+        ax2.set_title("Covered Population by Location")
+
+        from matplotlib.patches import Patch
+        legend_elements = [
+            Patch(facecolor="#2ca02c", label="Selected"),
+            Patch(facecolor="#d62728", label="Not Selected"),
+        ]
+        fig.legend(handles=legend_elements, loc="upper center", ncol=2, fontsize=9)
+
+        fig.tight_layout(rect=[0, 0, 1, 0.92])
+        plotter.save(fig, fig_dir / "site_selection.pdf", dpi=300)
+        plotter.save(fig, fig_dir / "site_selection.png", dpi=200)
+        fig_count += 1
+        print(f"  [{fig_count}] Site selection chart -> site_selection.pdf / .png")
 
 plotter.close_all()
+print(f"\n  Generated {fig_count} figures in: {fig_dir}")
 
 # ================================================================
-# 第七步：生成 Word 论文
+# 生成论文
 # ================================================================
 print()
-print("─" * 40)
-print("  📝 生成 Word 论文")
-print("─" * 40)
+print("-" * 40)
+print("  PHASE 5: Generating Paper")
+print("-" * 40)
 
 paper_path = generate_paper(
-    output_path=str(output_dir / "论文.docx"),
+    output_path=str(output_dir / f"论文_{problem_name}.docx"),
     problem_text=problem_text,
-    analysis={'sub_problems': sub_problems},
+    analysis={"sub_problems": sub_problems},
     recommendations=[{
-        'summary': ' → '.join(sp['model'] for sp in sub_problems),
-        'confidence': sum(sp['score'] for sp in sub_problems) / max(len(sub_problems), 1),
-        'sub_problems': sub_problems,
+        "summary": " -> ".join(sp["model"] for sp in sub_problems),
+        "confidence": sum(sp["score"] for sp in sub_problems) / max(len(sub_problems), 1),
+        "sub_problems": sub_problems,
     }],
     results=all_results,
     figures_dir=str(fig_dir),
 )
-
-print(f"  ✅ 论文已生成: {paper_path}")
+print(f"  Paper: {paper_path}")
 
 # ================================================================
 # 保存结果
 # ================================================================
 results_json = {
-    'problem': problem_name,
-    'sub_problems': sub_problems,
-    'results': {
-        k: {sk: sv for sk, sv in v.items() if sk != 'summary'}
-        for k, v in all_results.items()
-    },
+    "problem": problem_name,
+    "sub_problems": [
+        {"id": sp["id"], "title": sp["title"], "type": sp["type"],
+         "model": sp["model"], "score": sp["score"], "reason": sp["reason"]}
+        for sp in sub_problems
+    ],
+    "results": all_results,
 }
-with open(output_dir / 'results.json', 'w', encoding='utf-8') as f:
+with open(output_dir / "results.json", "w", encoding="utf-8") as f:
     json.dump(results_json, f, ensure_ascii=False, indent=2, default=str)
 
 # ================================================================
 # 完成
 # ================================================================
 print()
-print("╔══════════════════════════════════════════════╗")
-print("║          ✅ 求解完成！                        ║")
-print("╠══════════════════════════════════════════════╣")
-print(f"║  论文: output/{problem_name}/论文.docx")
-print(f"║  图表: output/{problem_name}/figures/")
-print(f"║  数据: output/{problem_name}/results.json")
-print("╚══════════════════════════════════════════════╝")
+print("=" * 60)
+print("  DONE!")
+print("=" * 60)
+print(f"  Paper : output/{problem_name}/论文_{problem_name}.docx")
+print(f"  Figures: output/{problem_name}/figures/")
+print(f"  Data  : output/{problem_name}/results.json")
 print()
-print("💡 下次使用：把新赛题放入 problems/ 文件夹，运行 python start.py 即可")
+print("  Next: Put new problems in problems/ folder, run 'python start.py'")
+print("=" * 60)
