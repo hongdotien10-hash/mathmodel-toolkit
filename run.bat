@@ -52,6 +52,29 @@ if %errorlevel% neq 0 (
     call "%~dp0install.bat"
 )
 
+:: Check if API key is configured
+%PYTHON% -c "from api.config import APIConfig; c=APIConfig(); exit(0 if c.is_configured else 1)" 2>nul
+if %errorlevel% neq 0 (
+    echo.
+    echo ================================================
+    echo   [INFO] No API key configured
+    echo ================================================
+    echo.
+    echo Without API key, the toolkit uses local rules.
+    echo With AI ^(DeepSeek^), paper quality is much better.
+    echo Cost: ~0.5-1 RMB ^(Free^) or ~3-5 RMB ^(Pro^).
+    echo.
+    set /p setup_api="Configure API key now? (y/n, default y): "
+    if "%setup_api%"=="" set setup_api=y
+    if /i "%setup_api%"=="y" (
+        call "%~dp0setup_api.bat"
+    ) else (
+        echo.
+        echo Skipping API setup. Run setup_api.bat later to configure.
+        echo Continuing with local rules...
+    )
+)
+
 :: Let user choose Free or Pro
 echo Select version:
 echo   [1] Free version (python start.py)

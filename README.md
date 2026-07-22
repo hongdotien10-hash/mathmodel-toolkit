@@ -33,9 +33,17 @@ problems/
     └── 附件2.csv
 ```
 
-### 3. 一键运行
+### 3. 配置 AI（可选，推荐）
 
-**最简单：双击 `run.bat`**，选择 Free 或 Pro 版即可。
+**双击 `setup_api.bat`**，粘贴你的 API Key。
+
+> 推荐用 DeepSeek：[platform.deepseek.com](https://platform.deepseek.com) 注册即送额度。
+> 不配 API 也能用，但 AI 增强后论文质量显著提升。费用：Free版 ¥0.5-1，Pro版 ¥3-5。
+
+### 4. 一键运行
+
+**双击 `run.bat`**，选择 Free 或 Pro 版。
+首次运行会自动提示配 API。
 
 > 或者手动运行：
 > ```bash
