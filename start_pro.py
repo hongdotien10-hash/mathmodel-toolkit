@@ -94,19 +94,18 @@ def main():
         if cfg.is_configured: api_key = cfg.api_key
     except Exception: pass
 
-    # === Step 4: 🆕 PRO — Multi-Model Contest ===
+    # === Step 4: 🆕 PRO — Multi-Model Contest (本地或AI对比) ===
     print("\n" + "-" * 40 + "\n  PRO Phase 2: Multi-Model Contest\n" + "-" * 40)
     contest_results = {}
-    if api_key:
-        mc = ModelContest(api_key=api_key)
-        for sp in sub_problems:
-            if sp["type"] in ("评价", "预测", "优化", "统计"):
-                print(f"\n  >> Q{sp['id']}: Running {sp['type']} model contest...")
-                cr = mc.contest(sp, data_files)
-                contest_results[f"sub_{sp['id']}"] = cr
-                print(f"     Winner: {cr['winner']} | {cr['ai_reason'][:80]}...")
-    else:
-        print("  [SKIP] No API key — using single model")
+    mc = ModelContest(api_key=api_key)  # 无API时自动用指标对比
+    for sp in sub_problems:
+        if sp["type"] in ("评价", "预测", "优化", "统计"):
+            print(f"\n  >> Q{sp['id']}: Running {sp['type']} model contest...")
+            cr = mc.contest(sp, data_files)
+            contest_results[f"sub_{sp['id']}"] = cr
+            print(f"     Winner: {cr['winner']} | {cr['ai_reason'][:80]}...")
+    if not api_key:
+        print("  [本地对比] 基于指标数值自动选优")
 
     # === Step 5: Solve with best models ===
     print("\n" + "-" * 40 + "\n  Phase 3: Solving with Best Models\n" + "-" * 40)
@@ -330,6 +329,7 @@ def _analyze(problem_text, data_profiles):
 
 def _find_df(data_files, ptype):
     for k, v in data_files.items():
+        if k.endswith("_norm"): continue
         if v.select_dtypes(include=np.number).shape[1] >= 2: return v
     return list(data_files.values())[0] if data_files else None
 
