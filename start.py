@@ -18,11 +18,13 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from mathmodel.utils import set_seed, Timer
 from mathmodel.analyzer import ProblemClassifier, ModelKnowledgeBase
-from mathmodel.models import EvaluationSolver, StatsSolver, OptimizationSolver
+from mathmodel.models import EvaluationSolver, StatsSolver, OptimizationSolver, MLSolver
 from mathmodel.sensitivity import SensitivityAnalyzer
 from mathmodel.visualization import Plotter, set_style, get_colors
 from mathmodel.paper.word_writer import generate_paper
 from mathmodel.paper.latex_writer import generate_latex_paper
+from mathmodel.preprocessing import MissingHandler, OutlierDetector, Normalizer
+from mathmodel.pipeline.rich_progress import PhaseTracker, print_header, print_section, print_result_summary
 
 set_seed(42)
 
@@ -54,9 +56,10 @@ def main():
     fig_dir = out_dir / "figures"
     fig_dir.mkdir(parents=True, exist_ok=True)
 
-    print("=" * 60)
-    print(f"  MathModel Toolkit — {selected.name}")
-    print("=" * 60)
+    # ---- Rich progress tracker ----
+    tracker = PhaseTracker(title=f"MathModel Toolkit — {selected.name}")
+
+    print_header(f"MathModel Toolkit — {selected.name}")
 
     # ---- Read problem text ----
     problem_text = ""
@@ -130,9 +133,7 @@ def main():
     # ================================================================
     # Step 2: Analyze & Classify
     # ================================================================
-    print("-" * 40)
-    print("  Phase 1: Problem Analysis")
-    print("-" * 40)
+    print_section("Phase 1: Problem Analysis")
 
     # Split sub-problems
     lines = problem_text.split('\n')
@@ -163,9 +164,7 @@ def main():
     # ================================================================
     # Step 2: AI Data Cleaning
     # ================================================================
-    print("-" * 40)
-    print("  Phase 1.5: AI Data Cleaning")
-    print("-" * 40)
+    print_section("Phase 1.5: AI Data Cleaning")
 
     try:
         from api.config import APIConfig
@@ -235,6 +234,42 @@ def main():
         print(f"  [AI-Clean] Skipped: {e}")
 
     # ================================================================
+    # Step 2.6: 数据预处理（缺失值→异常值→标准化）
+    # ================================================================
+    print_section("Phase 1.6: Data Preprocessing")
+
+    preprocess_report = {}
+    for name, df in data_files.items():
+        try:
+            n_before = len(df)
+            # 1. Handle missing values
+            mh = MissingHandler(strategy="median")
+            df_clean = mh.fit_transform(df)
+            missing_count = df.isnull().sum().sum()
+
+            # 2. Detect and remove outliers (only on numeric columns)
+            od = OutlierDetector(method="iqr", threshold=1.5)
+            df_clean = od.remove(df_clean)
+            n_removed = n_before - len(df_clean)
+
+            # 3. Normalize (Z-score) — store normalized in separate key for ML models
+            norm = Normalizer(method="zscore")
+            df_norm = norm.fit_transform(df_clean)
+
+            data_files[name] = df_clean
+            data_files[f"{name}_norm"] = df_norm  # for ML/classification models
+
+            preprocess_report[name] = {
+                "missing_filled": int(missing_count),
+                "outliers_removed": n_removed,
+                "final_rows": len(df_clean),
+                "normalized_cols": len(df_norm.select_dtypes(include=np.number).columns),
+            }
+            print(f"  [{name}] missing={missing_count} outliers={n_removed} → {len(df_clean)} rows")
+        except Exception as e:
+            print(f"  [{name}] preprocessing skipped: {e}")
+
+    # ================================================================
     # Step 2.5: AI 指导数据加载
     # ================================================================
     data_guide = {}
@@ -251,9 +286,7 @@ def main():
     # ================================================================
     # Step 3: AI-guided Solve → Validate → Fix loop
     # ================================================================
-    print("-" * 40)
-    print("  Phase 2-3: AI-Guided Solving & Validation")
-    print("-" * 40)
+    print_section("Phase 2-3: AI-Guided Solving & Validation")
 
     all_results = {}
     max_solve_rounds = 3
@@ -321,6 +354,8 @@ def main():
                         _solve_prediction(sp, data_files, fig_dir, all_results, dg_hints)
                     elif ptype == "优化" and data_files:
                         _solve_optimization(sp, data_files, fig_dir, all_results, dg_hints)
+                    elif ptype in ("分类", "聚类") and data_files:
+                        _solve_classification(sp, data_files, fig_dir, all_results, dg_hints)
                     elif ptype == "统计" and data_files:
                         _solve_statistics(sp, data_files, fig_dir, all_results, dg_hints)
                     elif ptype == "综合" and data_files:
@@ -360,10 +395,7 @@ def main():
     # ================================================================
     # Step 4: Sensitivity
     # ================================================================
-    print()
-    print("-" * 40)
-    print("  Phase 3: Sensitivity Analysis")
-    print("-" * 40)
+    print_section("Phase 3: Sensitivity Analysis")
 
     sa = SensitivityAnalyzer()
 
@@ -390,10 +422,7 @@ def main():
     # ================================================================
     # Step 5: Figures
     # ================================================================
-    print()
-    print("-" * 40)
-    print("  Phase 4: Figures")
-    print("-" * 40)
+    print_section("Phase 4: Figures")
 
     set_style("zh", "default")
     plotter = Plotter(language="zh")
@@ -475,16 +504,39 @@ def main():
             fig_count += 1
             print(f"  [{fig_count}] Correlation heatmap")
 
+        # 聚类/分类可视化 (PCA散点+聚类标签)
+        if "pca_transformed" in value and "labels" in value:
+            pca_xy = np.array(value["pca_transformed"])
+            labels = value["labels"]
+            n_clusters = value.get("n_clusters", 3)
+            fig, ax = plt.subplots(figsize=(6, 5))
+            colors = get_colors(n_clusters)
+            for c in range(n_clusters):
+                mask = np.array(labels) == c
+                ax.scatter(pca_xy[mask, 0], pca_xy[mask, 1],
+                          c=[colors[c]], s=30, alpha=0.7, edgecolors="white",
+                          label=f"Cluster {c+1}")
+            ax.set_xlabel("PC1"); ax.set_ylabel("PC2")
+            ax.legend(fontsize=8, frameon=False, title="Clusters")
+            despine_fn = getattr(plotter, 'despine', None)
+            if despine_fn is None:
+                from mathmodel.visualization.styles import despine
+                despine_fn = despine
+            despine_fn(ax)
+            ax.grid(alpha=0.2, linestyle=":")
+            fig.tight_layout()
+            plotter.save(fig, fig_dir / "clustering_pca.pdf")
+            plotter.save(fig, fig_dir / "clustering_pca.png")
+            fig_count += 1
+            print(f"  [{fig_count}] 聚类PCA可视化 (轮廓系数={value.get('silhouette_score',0):.3f})")
+
     plotter.close_all()
     print(f"  Generated {fig_count} figures")
 
     # ================================================================
     # Step 6: Paper
     # ================================================================
-    print()
-    print("-" * 40)
-    print("  Phase 5: AI-Enhanced Paper")
-    print("-" * 40)
+    print_section("Phase 5: AI-Enhanced Paper")
 
     # ---- AI-enhanced writing ----
     ai_content = {}
@@ -565,12 +617,11 @@ def main():
 
     # Done
     print()
-    print("=" * 60)
-    print(f"  DONE!")
-    print(f"  Paper : {paper_path}")
+    tracker.finish()
+    print_result_summary(sub_problems, all_results)
+    print_header(f"DONE! Paper → {paper_path}")
     print(f"  Figures: output/{selected.name}/figures/")
     print(f"  Results: output/{selected.name}/results.json")
-    print("=" * 60)
 
 
 # ================================================================
@@ -968,6 +1019,103 @@ def _solve_statistics(sp, data_files, fig_dir, results, ai_hints=None):
     print(f"     Analyzed {len(columns)} columns, {df.shape[0]} rows")
     for tc in top_corrs[:5]:
         print(f"       {tc['pair'][0]} vs {tc['pair'][1]}: r={tc['correlation']:.3f}")
+
+
+def _solve_classification(sp, data_files, fig_dir, results, ai_hints=None):
+    """分类/聚类类：K-means聚类+PCA降维可视化"""
+    mls = MLSolver()
+
+    # Find suitable data — prefer normalized version if available
+    best_name, best_df = None, None
+    for name, df in data_files.items():
+        if name.endswith("_norm"):
+            continue  # skip normalized variants for selection, use originals
+        num = df.select_dtypes(include=np.number).shape[1]
+        if num >= 2:
+            best_name, best_df = name, df
+            break
+    if best_df is None:
+        for name, df in data_files.items():
+            if name.endswith("_norm"):
+                best_name, best_df = name, df
+                break
+    if best_df is None:
+        print("     No suitable data for classification")
+        return
+
+    df = best_df
+    numeric = df.select_dtypes(include=np.number)
+    print(f"     Using: {best_name} ({numeric.shape[0]} rows, {numeric.shape[1]} features)")
+
+    # Use normalized data if available
+    df_norm = data_files.get(f"{best_name}_norm", df)
+    numeric_norm = df_norm.select_dtypes(include=np.number)
+
+    n_samples = numeric.shape[0]
+    n_features = numeric.shape[1]
+
+    # Determine number of clusters
+    if n_samples <= 50:
+        n_clusters = min(5, n_samples - 1)
+    elif n_samples <= 200:
+        n_clusters = min(5, max(2, n_samples // 20))
+    else:
+        n_clusters = min(8, max(3, n_samples // 50))
+    n_clusters = max(2, n_clusters)
+
+    # --- K-means clustering ---
+    kmeans_result = mls.kmeans(numeric_norm.values, n_clusters=n_clusters)
+
+    # --- PCA for visualization ---
+    pca_result = mls.pca(numeric_norm.values, n_components=2)
+
+    # --- Hierarchical clustering for comparison ---
+    try:
+        hier_result = mls.hierarchical(numeric_norm.values, n_clusters=n_clusters)
+    except Exception:
+        hier_result = None
+
+    # --- Build cluster profiles (mean of each feature per cluster) ---
+    labels_arr = np.array(kmeans_result["labels"])
+    cluster_profiles = {}
+    for c in range(n_clusters):
+        mask = labels_arr == c
+        if mask.sum() > 0:
+            cluster_profiles[f"Cluster {c+1}"] = {
+                "size": int(mask.sum()),
+                "pct": round(float(mask.sum() / n_samples * 100), 1),
+                "feature_means": {str(col): round(float(numeric.iloc[:, i][mask].mean()), 3)
+                                  for i, col in enumerate(numeric.columns[:8])},
+            }
+
+    # --- Determine dominant cluster ---
+    sizes = [(c, p["size"]) for c, p in cluster_profiles.items()]
+    sizes.sort(key=lambda x: -x[1])
+    dominant = sizes[0][0] if sizes else "Cluster 1"
+
+    results[f"sub_{sp['id']}"] = {
+        "method": "K-means + PCA",
+        "n_clusters": n_clusters,
+        "n_samples": n_samples,
+        "n_features": n_features,
+        "labels": kmeans_result["labels"],
+        "silhouette_score": kmeans_result["silhouette_score"],
+        "pca_transformed": pca_result["transformed"],
+        "pca_variance": pca_result["explained_variance_ratio"],
+        "cumulative_variance": pca_result["cumulative_variance"],
+        "cluster_profiles": cluster_profiles,
+        "hierarchical_labels": hier_result["labels"] if hier_result else [],
+        "dominant_cluster": dominant,
+        "summary": (f"K-means聚类: {n_samples}样本→{n_clusters}类, "
+                   f"轮廓系数={kmeans_result['silhouette_score']:.4f}, "
+                   f"最大类={dominant}({cluster_profiles.get(dominant, {}).get('pct', '?')}%), "
+                   f"PCA前2维累积方差={pca_result['cumulative_variance']:.2%}"),
+    }
+
+    print(f"     K-means: {n_clusters} clusters, silhouette={kmeans_result['silhouette_score']:.4f}")
+    print(f"     PCA: {pca_result['cumulative_variance']:.2%} variance retained")
+    for c, p in cluster_profiles.items():
+        print(f"       {c}: {p['size']} samples ({p['pct']}%)")
 
 
 # ================================================================

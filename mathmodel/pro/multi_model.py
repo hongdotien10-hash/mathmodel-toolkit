@@ -10,11 +10,12 @@ from typing import Optional
 
 
 class ModelContest:
-    """多模型竞赛 — 跑候选方法，AI对比选最优"""
+    """多模型竞赛 — 跑候选方法，AI对比选最优（无API时用指标对比）"""
 
-    def __init__(self, api_key: str, model: str = "deepseek-chat"):
+    def __init__(self, api_key: str = "", model: str = "deepseek-chat"):
         self.api_key = api_key
         self.model = model
+        self.use_ai = bool(api_key)
 
     def _call_ai(self, system: str, user: str) -> str:
         body = json.dumps({
@@ -62,8 +63,11 @@ class ModelContest:
                 print(f"     [Contest] {c['name']}: FAILED ({e})")
                 results.append({"model": c["name"], "result": {"error": str(e)}, "source": c["source"]})
 
-        # AI 选最优
-        comparison = self._ai_compare(ptype, sub_problem.get("title", ""), results)
+        # 选最优：AI对比 或 本地指标对比
+        if self.use_ai:
+            comparison = self._ai_compare(ptype, sub_problem.get("title", ""), results)
+        else:
+            comparison = self._local_compare(ptype, results)
         winner = comparison.get("winner", candidates[0]["name"])
 
         return {
@@ -339,6 +343,72 @@ class ModelContest:
         pca.fit(X)
         explained = float(np.cumsum(pca.explained_variance_ratio_)[:2][-1])
         return {"metric_name": "累积方差(前2)", "metric_value": round(explained, 4)}
+
+    # ================================================================
+    # 本地指标对比（无API时使用）
+    # ================================================================
+
+    def _local_compare(self, ptype: str, results: list[dict]) -> dict:
+        """基于指标数值自动选优，无需AI"""
+        valid = [r for r in results if "error" not in r.get("result", {})]
+        if not valid:
+            return {"winner": results[0]["model"] if results else "N/A",
+                    "reason": "所有候选模型运行失败", "ranking": [],
+                    "analysis": "无可用模型"}
+
+        # 确定指标方向：越大越好还是越小越好
+        bigger_better = {"R²", "r_squared", "explained_var", "Top2区分度", "分辨率",
+                        "最强|r|", "最强|ρ|", "累积方差(前2)", "目标值", "松驰目标值"}
+        smaller_better = {"MAPE(%)", "CR一致性"}
+
+        best_model = None; best_score = None
+        for r in valid:
+            metric_name = r["result"].get("metric_name", "")
+            metric_val = r["result"].get("metric_value", 0)
+            if isinstance(metric_val, str):
+                try: metric_val = float(metric_val)
+                except: metric_val = 0
+
+            if metric_name in bigger_better:
+                score = metric_val  # bigger is better
+            elif metric_name in smaller_better:
+                score = -metric_val  # smaller is better (negate so bigger=better)
+            else:
+                score = abs(metric_val)  # default: magnitude matters
+
+            if best_score is None or score > best_score:
+                best_score = score
+                best_model = r["model"]
+
+        # Build ranking
+        ranked = sorted(valid, key=lambda r: (
+            -r["result"].get("metric_value", 0)
+            if r["result"].get("metric_name", "") in bigger_better
+            else r["result"].get("metric_value", 999)
+        ))
+        ranking = [r["model"] for r in ranked]
+
+        # Build reason based on metrics
+        reasons = []
+        for r in valid:
+            mn = r["result"].get("metric_name", "?")
+            mv = r["result"].get("metric_value", "?")
+            reasons.append(f"{r['model']}: {mn}={mv}")
+
+        auto_reason = f"基于指标自动选优。{' | '.join(reasons)}。选择{best_model}，"
+        if ptype == "预测":
+            auto_reason += "预测精度最高（MAPE最小）。"
+        elif ptype == "评价":
+            auto_reason += "区分度最佳。"
+        elif ptype == "优化":
+            auto_reason += "目标值最优。"
+        elif ptype == "统计":
+            auto_reason += "统计效应最强。"
+        else:
+            auto_reason += "综合表现最优。"
+
+        return {"winner": best_model, "reason": auto_reason, "ranking": ranking,
+                "analysis": f"本地指标对比: {'; '.join(reasons)}"}
 
     # ================================================================
     # AI 对比选优
