@@ -381,16 +381,21 @@ def main():
                     print(f"\n  [AI-Validate] ALL RESULTS VALID!")
                     break
                 else:
-                    print(f"\n  [AI-Validate] {sum(1 for c in validation.get('checks',[]) if not c.get('valid'))} invalid. AI fix + execute...")
+                    n_invalid = sum(1 for c in validation.get("checks", []) if not c.get("valid"))
+                    print(f"\n  [AI-Validate] {n_invalid} invalid. AI fix + execute...")
                     ai_fix_plan = aiv.fix_solving_issues(problem_text, validation, data_guide)
                     fixed_results = aiv.execute_fix(ai_fix_plan, data_files, data_profiles,
                                                      load_full_fn=_get_full_data)
+                    n_fixed = len(fixed_results)
+                    if n_fixed == 0:
+                        print(f"       No fixes could be applied — accepting results with warnings")
+                        break  # Don't loop endlessly when fixes can't be applied
                     for c in validation.get("checks", []):
                         if not c.get("valid"):
                             key = f"sub_{c.get('sub_problem_id', '?')}"
                             if key in all_results: del all_results[key]
                     all_results.update(fixed_results)
-                    print(f"       Applied {len(fixed_results)} fixes")
+                    print(f"       Applied {n_fixed} fixes")
         except Exception as e:
             print(f"  [AI-Validate] Skipped: {e}")
             break
