@@ -507,10 +507,6 @@ def main():
                 plotter.save(fig, fig_dir / "optimization.png")
                 fig_count += 1
                 print(f"  [{fig_count}] 优化方案对比图")
-            plotter.save(fig, fig_dir / "correlation_heatmap.pdf", dpi=300)
-            plotter.save(fig, fig_dir / "correlation_heatmap.png", dpi=200)
-            fig_count += 1
-            print(f"  [{fig_count}] Correlation heatmap")
 
         # 聚类/分类可视化 (PCA散点+聚类标签)
         if "pca_transformed" in value and "labels" in value:
@@ -1004,6 +1000,15 @@ def _solve_statistics(sp, data_files, fig_dir, results, ai_hints=None):
         df_sample = df.sample(10000, random_state=42)
         numeric = df_sample[numeric.columns].select_dtypes(include=np.number)
         print(f"     Sampled to 10000 rows for correlation")
+
+    # Limit columns for correlation (wide tables are slow)
+    n_cols = numeric.shape[1]
+    if n_cols > 30:
+        # Keep top 30 columns by variance
+        variances = numeric.var().sort_values(ascending=False)
+        top_cols = variances.head(30).index.tolist()
+        numeric = numeric[top_cols]
+        print(f"     Limited to top 30 columns by variance (from {n_cols})")
 
     # Correlation matrix
     corr_matrix = numeric.corr().values
