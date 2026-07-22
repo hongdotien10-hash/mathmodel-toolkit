@@ -2,207 +2,137 @@
 
 > 数学建模竞赛全自动求解器 —— **上传题目，一键生成论文**
 
-[![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![MATLAB](https://img.shields.io/badge/MATLAB-R2020a+-orange.svg)](matlab/)
+[![Python](https://img.shields.io/badge/Python-3.10+-blue)](https://www.python.org/)
+[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
 ---
 
-## ✨ 核心亮点
+## ⚡ 5 分钟上手
 
-- 🧠 **智能模型选择** — 根据题目特征自动推荐最优模型（40+ 算法库）
-- ⚡ **一键生成论文** — PDF题目 + Excel数据 → 完整论文 PDF
-- 📊 **实时进度追踪** — Rich 终端面板 + JSON 双通道进度展示
-- 🎨 **论文级可视化** — matplotlib 图表直接用于竞赛论文
-- 🔧 **模块可插拔** — 每个环节可单独使用或替换
-- 🌐 **双语言** — Python + MATLAB 工具箱
-
----
-
-## 📦 快速开始
-
-### 安装
+### 1. 下载
 
 ```bash
-# 基础安装
-pip install mathmodel-toolkit
-
-# 全功能安装（含 PDF 解析、优化、Web UI）
-pip install mathmodel-toolkit[all]
+git clone https://github.com/hongdotien10-hash/mathmodel-toolkit.git
+cd mathmodel-toolkit
+pip install -e .
 ```
 
-### 一键运行
+### 2. 放入题目
+
+把赛题和数据放到 `problems/` 文件夹：
+
+```
+problems/
+└── 我的赛题/
+    ├── 题目.pdf          # PDF / DOCX / TXT
+    ├── 附件1.xlsx
+    └── 附件2.csv
+```
+
+### 3. 一键运行
 
 ```bash
-# CLI 命令行
-mathmodel run --problem 2024国赛A题.pdf --data 附件1.xlsx 附件2.csv
-
-# Python API
-from mathmodel import Pipeline
-
-pipe = Pipeline()
-pipe.run(problem="赛题.pdf", data=["附件.xlsx"])
-paper = pipe.get_paper()
-print(f"论文已生成: {paper}")
+python start.py
 ```
 
-### 仅分析和推荐模型
+论文和图表自动生成到 `output/我的赛题/`。
+
+---
+
+## 🤖 AI 增强（可选）
+
+接入大语言模型获得更智能的分析，默认使用 **DeepSeek V4 Pro**。
 
 ```bash
-mathmodel analyze --problem 赛题.pdf --data 附件.xlsx
+# 1. 配置 API Key
+cp api/.env.example .env
+# 编辑 .env，填入你的 DeepSeek Key
+
+# 2. 使用 AI 分析
+python -c "
+from api import AIAnalyzer
+analyzer = AIAnalyzer()
+result = analyzer.analyze_problem('你的赛题文本...')
+print(result)
+"
 ```
 
-### 启动 Web 界面
+| 提供商 | 获取 Key |
+|--------|---------|
+| DeepSeek（默认） | [platform.deepseek.com](https://platform.deepseek.com) |
+| OpenAI | [platform.openai.com](https://platform.openai.com) |
+| Anthropic | [console.anthropic.com](https://console.anthropic.com) |
+| 智谱 / 通义千问 / Kimi | 各自官网 |
 
-```bash
-mathmodel web --port 8501
-```
+API 不可用时自动回退本地规则引擎。
 
 ---
 
-## 🏗️ 流水线架构
+## 🧩 模块功能
 
-```
-📄 赛题PDF → 🔍 解析 → 🧠 分析+推荐 → ⚙️ 求解 → 📊 图表 → 📝 论文 → 📕 PDF
-                  │         │            │         │          │
-                  │    ┌────▼────┐       │    ┌────▼────┐     │
-                  │    │题型分类器│       │    │论文级图表│     │
-                  │    │知识库   │       │    │流程图生成│     │
-                  │    │推荐引擎 │       │    │灵敏度分析│     │
-                  │    └─────────┘       │    └─────────┘     │
-                  │                     │                    │
-             进度面板 ◄─────────────────┴────────────────────┘
-             (Rich UI + progress.json)
-```
-
----
-
-## 📂 项目结构
-
-```
-mathmodel-toolkit/
-├── mathmodel/                  # Python 核心库
-│   ├── pipeline/               # 流水线引擎（调度、进度、配置）
-│   ├── parser/                 # 文档解析 (PDF/DOCX)
-│   ├── analyzer/               # 题目分析 & 模型推荐
-│   ├── preprocessing/          # 数据预处理
-│   ├── models/                 # 模型库 (6大类 40+ 算法)
-│   │   ├── optimization.py     # 优化模型
-│   │   ├── differential.py     # 微分方程
-│   │   ├── statistics.py       # 统计模型
-│   │   ├── ml.py               # 机器学习
-│   │   ├── graph.py            # 图论/网络
-│   │   └── evaluation.py       # 评价模型
-│   ├── solver/                 # 自动求解引擎
-│   ├── sensitivity/            # 灵敏度分析
-│   ├── visualization/          # 论文级可视化
-│   ├── paper/                  # 论文自动生成
-│   ├── io/                     # 数据读写
-│   └── utils/                  # 通用工具
-├── matlab/                     # MATLAB 工具箱
-├── templates/                  # 论文模板 (LaTeX + Typst)
-├── webui/                      # Web 界面
-├── examples/                   # 赛题示例
-├── tests/                      # 测试
-└── docs/                       # 文档
-```
-
----
-
-## 🧠 支持的模型
-
-| 类别 | 算法 | 典型应用场景 |
-|------|------|-------------|
-| **优化** | 线性规划、整数规划、非线性规划、多目标优化、动态规划 | 资源分配、生产调度 |
-| **预测** | 灰色预测 GM(1,1)、ARIMA、回归、XGBoost、指数平滑 | 趋势预测、时序预测 |
-| **评价** | TOPSIS、AHP、熵权法、模糊综合评价、灰色关联、CRITIC、VIKOR | 方案评选、指标体系 |
-| **分类** | K-means、DBSCAN、层次聚类、SVM、随机森林、PCA、t-SNE | 模式识别、降维聚类 |
-| **微分方程** | ODE求解器、SIR模型、Logistic模型、PDE求解 | 动力学、传染病 |
-| **图论** | Dijkstra、Floyd、最大流、最小生成树、TSP、A* | 路径规划、网络分析 |
-| **统计** | t检验、卡方检验、ANOVA、相关分析、K-S检验 | 假设检验、回归诊断 |
-
----
-
-## 📊 自动模型选择逻辑
-
-```
-题目文本 → 关键词提取 → 题型分类 ─→ 知识库检索 → 多维打分 → Top-K推荐
-                            │         │              │
-                            │    ┌────▼────────────────▼─────┐
-                            │    │  数据匹配度 (样本量/类型)  │
-                            │    │  约束满足度 (线性/非线性)  │
-                            │    │  可解释性 (竞赛要求)      │
-                            │    │  历史使用率 (竞赛频率)    │
-                            │    └──────────────────────────┘
-                            │                │
-                            └────────────────┘
-```
-
----
-
-## 🎯 模块 API 速览
+### 模型求解（40+ 算法）
 
 ```python
-from mathmodel import Pipeline, PipelineConfig
-from mathmodel.preprocessing import MissingHandler, OutlierDetector, Normalizer
-from mathmodel.models import OptimizationSolver, EvaluationSolver, StatsSolver
+from mathmodel.models import EvaluationSolver, StatsSolver, OptimizationSolver
+
+# TOPSIS 评价
+result = EvaluationSolver().topsis(matrix, weights, impacts=[1, -1, 1])
+
+# 灰色预测 GM(1,1)
+pred = StatsSolver().grey_forecast([12, 15, 19, 24, 30, 38], forecast_steps=3)
+
+# 0-1 整数规划
+result = OptimizationSolver().integer_program(c=[-15, -22], A_ub=[[30, 45]], b_ub=[100], binary=True)
+```
+
+### 论文级图表
+
+```python
 from mathmodel.visualization import Plotter, set_style
-from mathmodel.io import read_data, to_latex_table
-from mathmodel.analyzer import ModelKnowledgeBase
-
-# 单独使用各模块
-evaluator = EvaluationSolver()
-result = evaluator.topsis(matrix, weights)
-print(f"得分: {result['scores']}")
-
-# 灰色预测
-solver = StatsSolver()
-pred = solver.grey_forecast([10, 15, 20, 26, 33], forecast_steps=3)
-print(f"预测: {pred['forecast']}")
-
-# 绘制论文图表
-plotter = Plotter(language="zh")
-fig, ax = plotter.line(x, y, xlabel="时间/天", ylabel="值", title="趋势分析")
-plotter.save(fig, "trend.pdf")
+set_style("zh")
+plotter = Plotter()
+fig, ax = plotter.bar(x=["A","B","C"], y=[0.64, 0.32, 0.53], title="TOPSIS得分")
+plotter.save(fig, "figures/scores.pdf")
 ```
 
 ---
 
-## 🖥️ Web UI
+## 📖 支持的模型
 
-```
-mathmodel web --port 8501
-```
-
-打开浏览器 `http://localhost:8501`：
-1. 📤 拖拽上传题目 PDF 和数据文件
-2. 👀 实时查看分析进度和模型推荐
-3. 📥 一键下载论文 PDF 和完整求解代码
+| 类别 | 算法 |
+|------|------|
+| **优化** | 线性规划、整数规划、非线性规划、多目标优化、动态规划 |
+| **预测** | GM(1,1)、ARIMA、回归、XGBoost、指数平滑 |
+| **评价** | TOPSIS、AHP、熵权法、模糊综合评价、灰色关联、CRITIC |
+| **分类** | K-means、DBSCAN、层次聚类、SVM、随机森林、PCA |
+| **微分方程** | ODE 求解、SIR、Logistic、PDE |
+| **图论** | Dijkstra、Floyd、最大流、TSP、A* |
+| **统计** | t检验、卡方、ANOVA、相关分析 |
 
 ---
 
-## 🤝 贡献
+## 🗂️ 项目结构
 
-欢迎提交 Issue 和 Pull Request！
-
-```bash
-git clone https://github.com/username/mathmodel-toolkit.git
-cd mathmodel-toolkit
-pip install -e ".[dev]"
-pytest tests/
+```
+├── start.py                   # ⚡ 一键启动
+├── problems/                  # 📂 题目放这里
+├── output/                    # 📁 论文自动输出
+├── api/                       # 🤖 LLM 接口
+│   ├── config.py              #   6大提供商预设
+│   ├── client.py              #   统一调用
+│   └── analyzer.py            #   AI 增强分析器
+├── mathmodel/                 # 🧠 核心引擎
+│   ├── analyzer/              #   题目分析+知识库
+│   ├── models/                #   模型库
+│   ├── visualization/         #   论文图表
+│   └── paper/                 #   Word 论文生成
+├── skills/                    # 📚 数模工作流(17个)
+├── matlab/                    # MATLAB 工具箱
+└── webui/                     # Web 界面
 ```
 
 ---
 
 ## 📄 许可证
 
-MIT License — 详见 [LICENSE](LICENSE)
-
----
-
-## 🙏 致谢
-
-- 姜启源《数学模型》
-- 司守奎《数学建模算法与应用》
-- 全国大学生数学建模竞赛 (CUMCM)
-- MCM/ICM 美国大学生数学建模竞赛
+MIT License
