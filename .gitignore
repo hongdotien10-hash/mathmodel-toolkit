@@ -84,3 +84,4 @@ temp/
 ~
 demo/output_demo/
 output/
+.env
