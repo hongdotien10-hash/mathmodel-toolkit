@@ -7,17 +7,21 @@
 
 ---
 
-## ⚡ 5 分钟上手
+## ⚡ 5 分钟上手（无需懂代码）
 
 ### 1. 下载
 
-```bash
-git clone https://github.com/hongdotien10-hash/mathmodel-toolkit.git
-cd mathmodel-toolkit
-pip install -e .
-```
+> **直接下载 ZIP**：[点我下载](https://github.com/hongdotien10-hash/mathmodel-toolkit/archive/refs/heads/main.zip)
 
-### 2. 放入题目
+解压到任意文件夹。
+
+### 2. 安装
+
+双击 `install.bat`（Windows），等待自动安装完成。
+
+> Mac/Linux：终端运行 `bash install.sh`
+
+### 3. 放入题目
 
 把赛题和数据放到 `problems/` 文件夹：
 
