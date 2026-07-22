@@ -75,25 +75,9 @@ if %errorlevel% neq 0 (
     )
 )
 
-:: Let user choose Free or Pro
-echo Select version:
-echo   [1] Free version (python start.py)
-echo   [2] Pro version  (python start_pro.py)
+echo Running MathModel Toolkit...
 echo.
-set /p choice="Enter 1 or 2 (default 1): "
-if "%choice%"=="" set choice=1
-if "%choice%"=="1" (
-    echo.
-    echo Running Free version...
-    %PYTHON% start.py
-) else if "%choice%"=="2" (
-    echo.
-    echo Running Pro version...
-    %PYTHON% start_pro.py
-) else (
-    echo Invalid choice. Running Free version...
-    %PYTHON% start.py
-)
+%PYTHON% start.py
 
 echo.
 echo ================================================
