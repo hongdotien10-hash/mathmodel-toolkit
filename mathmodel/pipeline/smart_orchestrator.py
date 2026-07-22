@@ -735,7 +735,29 @@ Return JSON:
                     dfs[matched] = df
                     print(f"  [AI-Exec]     {fname} -> {matched} ({df.shape[0]} rows)")
                 else:
-                    print(f"  [AI-Exec]     NOT FOUND: {fname} (available: {list(data_files.keys())[:5]})")
+                    print(f"  [AI-Exec]     NOT FOUND: {fname} — trying best-match fallback...")
+                    # Fallback: find best matching file by solver type
+                    for k, v in data_files.items():
+                        if k.endswith("_norm"):
+                            continue
+                        num = v.select_dtypes(include=np.number)
+                        if solver_type in ("evaluation", "评价") and num.shape[1] >= 3 and v.shape[0] < 1000:
+                            matched = k; break
+                        elif solver_type in ("prediction", "预测") and num.shape[1] <= 3 and v.shape[0] >= 4:
+                            matched = k; break
+                        elif solver_type in ("optimization", "优化") and num.shape[1] >= 2:
+                            matched = k; break
+                    if matched is None:
+                        # Last resort: any non-norm file
+                        for k, v in data_files.items():
+                            if not k.endswith("_norm") and v.select_dtypes(include=np.number).shape[1] >= 1:
+                                matched = k; break
+                    if matched:
+                        df = data_files[matched]
+                        dfs[matched] = df
+                        print(f"  [AI-Exec]     Fallback -> {matched} ({df.shape[0]} rows)")
+                    else:
+                        print(f"  [AI-Exec]     No suitable file found")
 
             if not dfs:
                 print(f"  [AI-Exec] Q{sp_id}: files not found: {files_needed}")

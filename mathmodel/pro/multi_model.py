@@ -262,6 +262,19 @@ class ModelContest:
         from mathmodel.models.optimization import OptimizationSolver
         costs = numeric.iloc[:,1].values.astype(float).tolist() if numeric.shape[1] > 1 else numeric.iloc[:,0].tolist()
         benefits = numeric.iloc[:,2].values.astype(float).tolist() if numeric.shape[1] > 2 else numeric.iloc[:,0].tolist()
+
+        # IP only for small problems (<=12 items); 2^N blows up
+        n_items = len(costs)
+        if n_items > 12:
+            # Reduce to top 12 by benefit/cost ratio
+            ratios = [(benefits[i]/costs[i] if costs[i] > 0 else 0, i) for i in range(n_items)]
+            ratios.sort(key=lambda x: -x[0])
+            top_idx = [i for _, i in ratios[:12]]
+            costs = [costs[i] for i in top_idx]
+            benefits = [benefits[i] for i in top_idx]
+            budget = sum(costs) * 0.6
+            print(f"     [IP] Reduced from {n_items} to 12 items for IP")
+
         budget = sum(costs) * 0.6
         opt = OptimizationSolver()
         c = [-b for b in benefits]
@@ -281,6 +294,16 @@ class ModelContest:
     def _run_greedy(self, numeric, df):
         costs = numeric.iloc[:,1].values.astype(float).tolist() if numeric.shape[1] > 1 else [1]*len(numeric)
         benefits = numeric.iloc[:,2].values.astype(float).tolist() if numeric.shape[1] > 2 else numeric.iloc[:,0].tolist()
+
+        # Cap at 30 items for speed
+        n = len(costs)
+        if n > 30:
+            ratios = [(benefits[i]/costs[i] if costs[i] > 0 else 0, i) for i in range(n)]
+            ratios.sort(key=lambda x: -x[0])
+            top_idx = [i for _, i in ratios[:30]]
+            costs = [costs[i] for i in top_idx]
+            benefits = [benefits[i] for i in top_idx]
+
         budget = sum(costs) * 0.6
         ratios = [(benefits[i]/costs[i] if costs[i] > 0 else 0, i) for i in range(len(costs))]
         ratios.sort(key=lambda x: -x[0])
@@ -296,6 +319,16 @@ class ModelContest:
     def _run_relaxed(self, numeric, df):
         costs = numeric.iloc[:,1].values.astype(float).tolist() if numeric.shape[1] > 1 else [1]*len(numeric)
         benefits = numeric.iloc[:,2].values.astype(float).tolist() if numeric.shape[1] > 2 else numeric.iloc[:,0].tolist()
+
+        # Cap at 30 items for speed
+        n = len(costs)
+        if n > 30:
+            ratios = [(benefits[i]/costs[i] if costs[i] > 0 else 0, i) for i in range(n)]
+            ratios.sort(key=lambda x: -x[0])
+            top_idx = [i for _, i in ratios[:30]]
+            costs = [costs[i] for i in top_idx]
+            benefits = [benefits[i] for i in top_idx]
+
         budget = sum(costs) * 0.6
         ratios = sorted([(benefits[i]/(costs[i] or 1), i) for i in range(len(costs))], key=lambda x: -x[0])
         selected = []; remaining = budget; used = [0.0]*len(costs)

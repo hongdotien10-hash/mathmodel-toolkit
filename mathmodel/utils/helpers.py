@@ -7,6 +7,8 @@ import random
 import time
 import logging
 import os
+import sys
+import threading
 from pathlib import Path
 from typing import Optional, Callable
 from datetime import timedelta
@@ -164,3 +166,79 @@ class ProgressCallback:
         self.total = total
         self.current = 0.0
         self.message = ""
+
+
+# ================================================================
+# 安全执行工具 — 超时跳过，永不卡死
+# ================================================================
+
+def safe_call(fn: Callable, desc: str = "", timeout: float = 0,
+              default=None, verbose: bool = True):
+    """安全调用函数：超时/异常时返回 default，永不抛异常。
+
+    Args:
+        fn: 要调用的函数（无参数）
+        desc: 描述文字
+        timeout: 超时秒数，0=不限
+        default: 失败时的默认返回值
+        verbose: 是否打印错误
+    """
+    if timeout <= 0:
+        try:
+            return fn()
+        except Exception as e:
+            if verbose:
+                print(f"  [SKIP] {desc}: {e}")
+            return default
+
+    # 线程超时实现（跨平台）
+    result = [default]
+    exc_info = [None]
+
+    def worker():
+        try:
+            result[0] = fn()
+        except Exception as e:
+            exc_info[0] = e
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    t.join(timeout)
+
+    if t.is_alive():
+        if verbose:
+            print(f"  [TIMEOUT] {desc} ({timeout}s) — skipped")
+        return default
+
+    if exc_info[0] is not None:
+        if verbose:
+            print(f"  [SKIP] {desc}: {exc_info[0]}")
+        return default
+
+    return result[0]
+
+
+class PhaseGuard:
+    """阶段保护器：超时或异常时自动跳过，记录失败"""
+
+    def __init__(self, max_phase_seconds: float = 300):
+        self.max_seconds = max_phase_seconds
+        self.failures: list[str] = []
+        self.skips: list[str] = []
+
+    def run(self, desc: str, fn: Callable, timeout: float = 0, default=None):
+        """运行一个步骤，失败则记录并继续"""
+        if timeout <= 0:
+            timeout = self.max_seconds
+        result = safe_call(fn, desc=desc, timeout=timeout, default=default)
+        if result is default and default is not None:
+            self.skips.append(desc)
+        return result
+
+    def report(self):
+        """打印跳过摘要"""
+        if self.skips:
+            print(f"\n  [GUARD] {len(self.skips)} steps skipped: {', '.join(self.skips[:10])}")
+        if self.failures:
+            print(f"  [GUARD] {len(self.failures)} steps failed: {', '.join(self.failures[:10])}")
+        return len(self.skips) + len(self.failures)

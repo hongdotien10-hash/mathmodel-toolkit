@@ -162,8 +162,11 @@ class Plotter:
 
     def heatmap(self, matrix, labels, cmap="RdBu_r", vmin=-1, vmax=1, annot=True):
         """相关热力图 — RdBu_r 配色"""
+        import numpy as np
+        # 干掉 NaN/Inf 防止 imshow 崩溃
+        matrix = np.nan_to_num(np.array(matrix), nan=0.0, posinf=1.0, neginf=-1.0)
         n = len(labels)
-        fig, ax = self._fig(figsize=(n*1.1 + 1, n*0.9 + 0.5))
+        fig, ax = self._fig(figsize=(min(n*1.1 + 1, 16), min(n*0.9 + 0.5, 12)))
         im = ax.imshow(matrix, cmap=cmap, vmin=vmin, vmax=vmax, aspect="auto")
         ax.set_xticks(range(n))
         ax.set_yticks(range(n))
@@ -172,10 +175,12 @@ class Plotter:
         cbar = plt.colorbar(im, ax=ax, shrink=0.85, pad=0.02)
         cbar.ax.tick_params(labelsize=7)
 
-        if annot:
+        if annot and n <= 15:  # 超过15×15不标注数字，太密
             for i in range(n):
                 for j in range(n):
-                    val = matrix[i][j] if isinstance(matrix[i][j], float) else matrix[i, j]
+                    val = float(matrix[i, j])
+                    if np.isnan(val) or np.isinf(val):
+                        val = 0.0
                     color = "white" if abs(val) > 0.5 else "black"
                     ax.text(j, i, f"{val:.2f}", ha="center", va="center", fontsize=7, color=color)
 
