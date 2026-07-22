@@ -694,11 +694,14 @@ def _solve_evaluation(sp, data_files, fig_dir, results, ai_hints=None):
 
 def _solve_prediction(sp, data_files, fig_dir, results, ai_hints=None):
     """预测类：聚合时序数据后用GM(1,1)预测"""
-    # Find time-series-like data: fewer columns, time-like index
+    # Find time-series-like data: fewer columns, time-like index, NOT huge
     best_name, best_df = None, None
     for name, df in data_files.items():
         if name.endswith("_norm"): continue
-        if df.select_dtypes(include=np.number).shape[1] <= 3 and df.shape[0] >= 4:
+        n_num = df.select_dtypes(include=np.number).shape[1]
+        n_rows = df.shape[0]
+        # Prediction needs small, time-series data (skip transaction tables)
+        if n_num <= 3 and 4 <= n_rows <= 5000:
             # Check if there's a column that looks like dates
             for col in df.columns:
                 if '日期' in str(col) or '时间' in str(col) or 'date' in str(col).lower() or '年份' in str(col):
@@ -707,20 +710,21 @@ def _solve_prediction(sp, data_files, fig_dir, results, ai_hints=None):
             if best_df is not None:
                 break
 
-    # Fallback: any small table
+    # Fallback: any small table (max 500 rows)
     if best_df is None:
         for name, df in data_files.items():
             if name.endswith("_norm"): continue
-            if df.shape[0] <= 1000 and df.select_dtypes(include=np.number).shape[1] >= 1:
+            if df.shape[0] <= 500 and df.select_dtypes(include=np.number).shape[1] >= 1:
                 best_name, best_df = name, df
                 break
 
     if best_df is None:
-        print("     No suitable data for prediction")
+        print("     No suitable data for prediction (need small time-series, <=5000 rows)")
         return
 
     df = best_df
-    print(f"     Using: {best_name} ({df.shape[0]} rows)")
+    n_rows = df.shape[0]
+    print(f"     Using: {best_name} ({n_rows} rows)")
 
     # If there's a date column, aggregate by it
     date_col = None
@@ -729,19 +733,25 @@ def _solve_prediction(sp, data_files, fig_dir, results, ai_hints=None):
             date_col = col
             break
 
-    if date_col and df.shape[0] > 100:
-        # Aggregate daily
+    if date_col and n_rows > 50:
+        # Aggregate by date (limit rows for safety)
+        if n_rows > 5000:
+            df = df.head(5000)  # safety trim
+            print(f"     Trimmed to 5000 rows for date parsing")
         df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
+        df = df.dropna(subset=[date_col])  # remove rows where date parsing failed
         numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
         if len(numeric_cols) >= 1:
             value_col = numeric_cols[0]
-            # Find the best value column
             for c in numeric_cols:
                 if any(kw in str(c) for kw in ['销量', '销售', '数量', '金额', 'price', 'qty', 'amount']):
                     value_col = c
                     break
-            daily = df.groupby(date_col)[value_col].sum().sort_index()
-            data = daily.tolist()
+            if df.shape[0] > 0:
+                daily = df.groupby(date_col)[value_col].sum().sort_index()
+                data = daily.tolist()
+            else:
+                data = []
         else:
             data = df.select_dtypes(include=np.number).iloc[:, 0].tolist()
     else:
@@ -762,15 +772,15 @@ def _solve_prediction(sp, data_files, fig_dir, results, ai_hints=None):
 
         data = df[data_col].dropna().tolist()
 
+    # Final safety: ensure data is reasonable
     if len(data) < 4:
         print(f"     Not enough data points ({len(data)})")
         return
+    if len(data) > 200:
+        data = data[-50:]  # take last 50 for trend
+        print(f"     Trimmed to last 50 points")
 
     print(f"     Series: {len(data)} data points, range [{min(data):.1f}, {max(data):.1f}]")
-
-    # If series is too long, take last N points
-    if len(data) > 100:
-        data = data[-50:]
 
     solver = StatsSolver()
     pred = solver.grey_forecast(data, forecast_steps=3)
