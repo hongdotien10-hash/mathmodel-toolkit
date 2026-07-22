@@ -15,6 +15,7 @@ import warnings; warnings.filterwarnings('ignore')
 sys.path.insert(0, str(Path(__file__).parent))
 
 from mathmodel.utils import set_seed, Timer
+from mathmodel.utils.helpers import safe_call
 from mathmodel.analyzer import ProblemClassifier, ModelKnowledgeBase
 from mathmodel.models import EvaluationSolver, StatsSolver, OptimizationSolver, MLSolver
 from mathmodel.sensitivity import SensitivityAnalyzer
@@ -98,9 +99,12 @@ def main():
     for sp in sub_problems:
         if sp["type"] in ("评价", "预测", "优化", "统计"):
             print(f"\n  >> Q{sp['id']}: Running {sp['type']} model contest...")
-            cr = mc.contest(sp, data_files)
+            cr = safe_call(lambda s=sp: mc.contest(s, data_files),
+                          desc=f"Q{sp['id']} model contest", timeout=300,
+                          default={"winner": sp.get("model","?"), "candidates": [],
+                                   "ai_reason": "contest skipped (timeout)"})
             contest_results[f"sub_{sp['id']}"] = cr
-            print(f"     Winner: {cr['winner']} | {cr['ai_reason'][:80]}...")
+            print(f"     Winner: {cr.get('winner','?')} | {cr.get('ai_reason','')[:80]}...")
     if not api_key:
         print("  [本地对比] 基于指标数值自动选优")
 
@@ -222,7 +226,9 @@ def main():
             sp_id = sp["id"]
             result = all_results.get(f"sub_{sp_id}", {})
             cr = contest_results.get(f"sub_{sp_id}", {})
-            text = rn.narrate_result(sp, result, cr)
+            text = safe_call(lambda s=sp, r=result, c=cr: rn.narrate_result(s, r, c),
+                           desc=f"Q{sp_id} result writing", timeout=180,
+                           default=rn._fallback_narrative(sp, result))
             ai_content[f"section_{sp_id}"] = text
             print(f"  Q{sp_id}: {len(text)} chars")
 

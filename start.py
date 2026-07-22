@@ -17,6 +17,7 @@ warnings.filterwarnings('ignore')
 sys.path.insert(0, str(Path(__file__).parent))
 
 from mathmodel.utils import set_seed, Timer
+from mathmodel.utils.helpers import safe_call, PhaseGuard
 from mathmodel.analyzer import ProblemClassifier, ModelKnowledgeBase
 from mathmodel.models import EvaluationSolver, StatsSolver, OptimizationSolver, MLSolver
 from mathmodel.sensitivity import SensitivityAnalyzer
@@ -351,53 +352,58 @@ def main():
             # ---- Fallback: local solvers with AI hints ----
             if not ai_executed:
                 with Timer() as t:
-                    if ptype == "评价" and data_files:
-                        _solve_evaluation(sp, data_files, fig_dir, all_results, dg_hints)
-                    elif ptype == "预测" and data_files:
-                        _solve_prediction(sp, data_files, fig_dir, all_results, dg_hints)
-                    elif ptype == "优化" and data_files:
-                        _solve_optimization(sp, data_files, fig_dir, all_results, dg_hints)
-                    elif ptype in ("分类", "聚类") and data_files:
-                        _solve_classification(sp, data_files, fig_dir, all_results, dg_hints)
-                    elif ptype == "统计" and data_files:
-                        _solve_statistics(sp, data_files, fig_dir, all_results, dg_hints)
-                    elif ptype == "综合" and data_files:
-                        _solve_statistics(sp, data_files, fig_dir, all_results, dg_hints)
-                        if f"sub_{sp_id}" not in all_results:
+                    def solve_one():
+                        if ptype == "评价" and data_files:
+                            _solve_evaluation(sp, data_files, fig_dir, all_results, dg_hints)
+                        elif ptype == "预测" and data_files:
+                            _solve_prediction(sp, data_files, fig_dir, all_results, dg_hints)
+                        elif ptype == "优化" and data_files:
                             _solve_optimization(sp, data_files, fig_dir, all_results, dg_hints)
+                        elif ptype in ("分类", "聚类") and data_files:
+                            _solve_classification(sp, data_files, fig_dir, all_results, dg_hints)
+                        elif ptype == "统计" and data_files:
+                            _solve_statistics(sp, data_files, fig_dir, all_results, dg_hints)
+                        elif ptype == "综合" and data_files:
+                            _solve_statistics(sp, data_files, fig_dir, all_results, dg_hints)
+                            if f"sub_{sp_id}" not in all_results:
+                                _solve_optimization(sp, data_files, fig_dir, all_results, dg_hints)
+                    safe_call(solve_one, desc=f"Q{sp_id} {ptype} solver", timeout=120)
                 print(f"     Time: {t.duration}")
 
-        # ---- AI validate results ----
-        try:
+        # ---- AI validate results (with timeout guard) ----
+        def validate_and_fix():
             from api.config import APIConfig
             cfg2 = APIConfig()
-            if cfg2.is_configured:
-                from mathmodel.pipeline.smart_orchestrator import AIDrivenPipeline
-                aiv = AIDrivenPipeline(api_key=cfg2.api_key, model=cfg2.model)
-                validation = aiv.validate_results(problem_text, sub_problems, all_results, data_guide)
+            if not cfg2.is_configured:
+                return "no_api"
+            from mathmodel.pipeline.smart_orchestrator import AIDrivenPipeline
+            aiv = AIDrivenPipeline(api_key=cfg2.api_key, model=cfg2.model)
+            validation = aiv.validate_results(problem_text, sub_problems, all_results, data_guide)
 
-                all_valid = all(c.get("valid", False) for c in validation.get("checks", []))
-                if all_valid:
-                    print(f"\n  [AI-Validate] ALL RESULTS VALID!")
-                    break
-                else:
-                    n_invalid = sum(1 for c in validation.get("checks", []) if not c.get("valid"))
-                    print(f"\n  [AI-Validate] {n_invalid} invalid. AI fix + execute...")
-                    ai_fix_plan = aiv.fix_solving_issues(problem_text, validation, data_guide)
-                    fixed_results = aiv.execute_fix(ai_fix_plan, data_files, data_profiles,
-                                                     load_full_fn=_get_full_data)
-                    n_fixed = len(fixed_results)
-                    if n_fixed == 0:
-                        print(f"       No fixes could be applied — accepting results with warnings")
-                        break  # Don't loop endlessly when fixes can't be applied
-                    for c in validation.get("checks", []):
-                        if not c.get("valid"):
-                            key = f"sub_{c.get('sub_problem_id', '?')}"
-                            if key in all_results: del all_results[key]
-                    all_results.update(fixed_results)
-                    print(f"       Applied {n_fixed} fixes")
-        except Exception as e:
-            print(f"  [AI-Validate] Skipped: {e}")
+            all_valid = all(c.get("valid", False) for c in validation.get("checks", []))
+            if all_valid:
+                print(f"\n  [AI-Validate] ALL RESULTS VALID!")
+                return "all_valid"
+
+            n_invalid = sum(1 for c in validation.get("checks", []) if not c.get("valid"))
+            print(f"\n  [AI-Validate] {n_invalid} invalid. AI fix + execute...")
+            ai_fix_plan = aiv.fix_solving_issues(problem_text, validation, data_guide)
+            fixed_results = aiv.execute_fix(ai_fix_plan, data_files, data_profiles,
+                                             load_full_fn=_get_full_data)
+            n_fixed = len(fixed_results)
+            if n_fixed == 0:
+                print(f"       No fixes could be applied — accepting results with warnings")
+                return "no_fix"
+            for c in validation.get("checks", []):
+                if not c.get("valid"):
+                    key = f"sub_{c.get('sub_problem_id', '?')}"
+                    if key in all_results: del all_results[key]
+            all_results.update(fixed_results)
+            print(f"       Applied {n_fixed} fixes")
+            return "fixed"
+
+        vresult = safe_call(validate_and_fix, desc="AI validate+fix loop", timeout=300)
+        if vresult in ("all_valid", "no_fix", "no_api", None):
             break
 
     # ================================================================
@@ -542,7 +548,7 @@ def main():
     # ================================================================
     print_section("Phase 5: AI-Enhanced Paper")
 
-    # ---- AI-enhanced writing ----
+    # ---- AI-enhanced writing (with per-step timeout protection) ----
     ai_content = {}
     try:
         from api.config import APIConfig
