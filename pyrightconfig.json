@@ -1,0 +1,9 @@
+{
+  "include": [".", "mathmodel", "api", "webui"],
+  "exclude": ["**/node_modules", "**/__pycache__", ".git", "output", "problems"],
+  "extraPaths": ["."],
+  "pythonVersion": "3.10",
+  "typeCheckingMode": "basic",
+  "reportMissingImports": "warning",
+  "reportMissingModuleSource": false
+}
