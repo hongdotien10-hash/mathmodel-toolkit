@@ -151,7 +151,9 @@ def generate_paper(output_path, problem_text="", analysis=None, recommendations=
     _heading(doc, "摘要")
     ai_abstract = (ai_content or {}).get("abstract", "")
     if ai_abstract and len(ai_abstract) > 50:
-        _para(doc, ai_abstract)
+        import re
+        ai_abstract = re.sub(r'^#{1,6}\s+.*$', '', ai_abstract, flags=re.MULTILINE)
+        _para(doc, ai_abstract.strip())
     else:
         _para(doc, _build_abstract_from_results(sub_problems, results))
     _para(doc, _derive_keywords(sub_problems, results), indent=False, bold=True)
@@ -224,7 +226,11 @@ def generate_paper(output_path, problem_text="", analysis=None, recommendations=
     if ai_sens and len(ai_sens) > 50:
         _para(doc, ai_sens)
     else:
-        _para(doc, _build_sensitivity_text(sub_problems, results))
+        sens_text = _build_sensitivity_text(sub_problems, results)
+        # Strip any markdown headers that leaked from AI content
+        import re
+        sens_text = re.sub(r'^#{1,6}\s+.*$', '', sens_text, flags=re.MULTILINE)
+        _para(doc, sens_text.strip())
     _heading(doc, "4.2 算法鲁棒性分析", 2)
     _para(doc, _build_robustness_text(sub_problems, results))
     _embed_all_figures(doc, fig_dir, fig_num)
@@ -887,8 +893,6 @@ def _build_optimization_section(doc, sp_id, result, fig_dir, fig_num, ai_text=""
     is_routing = bool(result.get("tour") or result.get("routes")
                       or result.get("total_distance") or result.get("metric_value"))
     is_knapsack = bool(result.get("selection"))
-
-    _heading(doc, f"{sec} 模型建立与求解", 2)
 
     if is_routing:
         _routing_section_content(doc, sec, result, fig_dir, fig_num, ai_text)
