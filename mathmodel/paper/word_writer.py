@@ -507,7 +507,8 @@ def _build_optimization_section(doc, sp_id, result, fig_dir, fig_num, ai_text=""
     """优化模型章节 — 自动检测TSP/VRP vs 背包 写相应内容"""
     sec = f"4.{sp_id}"
     result = result or {}
-    is_routing = bool(result.get("tour") or result.get("routes") or result.get("total_distance"))
+    is_routing = bool(result.get("tour") or result.get("routes")
+                      or result.get("total_distance") or result.get("metric_value"))
     is_knapsack = bool(result.get("selection"))
 
     _heading(doc, f"{sec} 模型建立与求解", 2)
@@ -526,9 +527,9 @@ def _build_optimization_section(doc, sp_id, result, fig_dir, fig_num, ai_text=""
 def _routing_section_content(doc, sec, result, fig_dir, fig_num, ai_text):
     """TSP/VRP路径优化论文内容"""
     method = result.get("method", "路径优化算法")
-    n_locations = result.get("n_locations", "?")
+    n_locations = result.get("n_locations", len(result.get("tour", [])) - 1 if result.get("tour") else "?")
     n_vehicles = result.get("n_vehicles", 1)
-    total_dist = result.get("total_distance", "?")
+    total_dist = result.get("total_distance") or result.get("metric_value") or "?"
 
     _heading(doc, f"{sec}.1 问题描述与建模", 3)
     if n_vehicles > 1:

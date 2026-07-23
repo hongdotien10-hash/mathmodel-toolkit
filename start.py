@@ -176,8 +176,16 @@ def main():
                 best_result = next((c for c in best.get("candidates", [])
                                     if c["model"] == winner), {})
                 result_data = best_result.get("result", {})
-                # Check if result is empty/garbage
-                if result_data and result_data.get("metric_value", -1) != 0 and \
+                # Convert contest format to paper format
+                if result_data and result_data.get("tour"):
+                    result_data["total_distance"] = result_data.get("metric_value", 0)
+                    result_data["tour_labels"] = [str(t+1) for t in result_data["tour"]]
+                    result_data["n_locations"] = len(result_data["tour"]) - 1
+                    result_data["summary"] = f"最优路径总距离: {result_data.get('metric_value',0)}km"
+                    all_results[f"sub_{sp_id}"] = result_data
+                    print(f"  Q{sp_id}: [{winner}] — contest winner (routing)")
+                    continue
+                elif result_data and result_data.get("metric_value", -1) != 0 and \
                    result_data.get("selection") != []:
                     all_results[f"sub_{sp_id}"] = result_data
                     print(f"  Q{sp_id}: [{winner}] — contest winner")
@@ -224,7 +232,7 @@ def main():
                 n = min(sparse.shape[0], min(sparse.shape[1], 100))
                 deep_result = deep_solve_tsp(sparse, n, fig_dir, sp_id, time_budget=600)
                 all_results[f"sub_{sp_id}"] = {
-                    "method": f"DeepTSP: {deep_result['best']['method']}",
+                    "method": f"Floyd-Warshall + TSP(NN+2-opt+SA)",
                     "total_distance": deep_result["best"]["distance"],
                     "tour": deep_result["best"]["tour"],
                     "tour_labels": [str(t+1) for t in deep_result["best"]["tour"]],
@@ -232,7 +240,9 @@ def main():
                     "n_vehicles": 1,
                     "all_methods": deep_result["all_ranked"],
                     "total_time_s": deep_result["total_time"],
-                    "summary": f"TSP Deep: {deep_result['best']['distance']}km ({deep_result['best']['method']}, {deep_result['total_time']:.0f}s)"
+                    "summary": f"最短配送回路总距离: {deep_result['best']['distance']}km, "
+                              f"覆盖全部{n}个地点。采用{deep_result['best']['method']}求解，"
+                              f"耗时{deep_result['total_time']:.0f}秒。"
                 }
                 print(f"     DeepTSP: {deep_result['best']['distance']} ({deep_result['total_time']:.0f}s)")
                 continue
