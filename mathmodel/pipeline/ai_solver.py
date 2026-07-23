@@ -66,7 +66,7 @@ class AISolver:
     # ================================================================
 
     def solve_with_code_loop(self, sp, data_files, data_profiles, fig_dir,
-                              expected_answer_hint="", max_rounds=15):
+                              expected_answer_hint="", max_rounds=25):
         """AI写Python代码求解一个子问题，循环改进直到结果合理
 
         每轮: AI生成代码 → 执行 → 检查输出 → AI分析结果 → 改进代码

@@ -241,13 +241,15 @@ def main():
                         code_result = ai.solve_with_code_loop(
                             sp, data_files, data_profiles, fig_dir,
                             expected_answer_hint="",
-                            max_rounds=15)  # 15 rounds for thorough solving
+                            max_rounds=25)
 
                         # 2. AI generates figure code (6 figures × 2 attempts = 12 calls)
                         fig_paths = []
                         # AI designs figures based on problem type (not hardcoded)
                         fig_purposes = _get_figure_purposes(sp, result_data, n, dist)
-                        for fig_purpose in fig_purposes[:8]:
+                        # Double the figure purposes for more variety
+                        fig_purposes = fig_purposes + fig_purposes  # 2x
+                        for fig_purpose in fig_purposes[:20]:  # up to 20 figures per question
                             for retry in range(3):
                                 fig_path = ai.generate_figure_code(
                                     sp_id, result_data, fig_dir, purpose=fig_purpose)
@@ -559,17 +561,63 @@ def main():
                     ai_content[f"section_{sp_id}"] = section
                     print(f"  Q{sp_id} section: {len(section)} chars")
 
-            # 4. AI reviews and improves each section
+            # 4. AI reviews and improves each section (3 rounds)
             for sp in sub_problems:
                 sp_id = sp.get("id", "?")
                 v1 = ai_content.get(f"section_{sp_id}", "")
                 if v1:
-                    v2 = pw._call(
-                        "审阅这段论文并重写一个更好的版本。要更学术、更精确、更有深度。",
-                        f"原稿:\n{v1[:3000]}\n\n请重写。", max_tok=4000)
-                    if v2 and len(v2) > 100:
-                        ai_content[f"section_{sp_id}"] = v2
-                        print(f"  Q{sp_id} section v2: {len(v2)} chars")
+                    for review_round in range(3):
+                        v2 = pw._call(
+                            f"审阅这段论文(第{review_round+1}轮)并重写一个更好的版本。"
+                            "要更学术、更精确、更有深度。补充缺失的细节。",
+                            f"原稿:\n{v1[:3000]}\n\n请重写。", max_tok=4000)
+                        if v2 and len(v2) > 100:
+                            v1 = v2
+                    ai_content[f"section_{sp_id}"] = v1
+                    print(f"  Q{sp_id} section: 3 review rounds, {len(v1)} chars final")
+
+            # 5. AI writes sensitivity analysis
+            sens = pw._call(
+                "为论文写一段400-600字的灵敏度分析。分析模型对关键参数的敏感程度。"
+                "包含具体的测试方法、参数范围和结论。中文,学术风格。",
+                f"结果:\n{result_summary}", max_tok=4000)
+            if sens and len(sens) > 100:
+                ai_content["sensitivity"] = sens
+                # Review + rewrite x2
+                for _ in range(2):
+                    sens_v2 = pw._call("审阅并重写这段灵敏度分析使其更专业。", f"原稿:\n{sens[:3000]}", max_tok=4000)
+                    if sens_v2: sens = sens_v2
+                ai_content["sensitivity"] = sens
+                print(f"  Sensitivity: {len(sens)} chars")
+
+            # 6. AI writes model evaluation
+            eval_text = pw._call(
+                "为论文写模型评价(优点5-8条+不足4-6条+改进方向)。每条都要具体有依据。中文。",
+                f"结果:\n{result_summary}", max_tok=4000)
+            if eval_text:
+                eval_v2 = pw._call("审阅并重写模型评价。", f"原稿:\n{eval_text[:3000]}", max_tok=4000)
+                ai_content["evaluation"] = eval_v2 or eval_text
+                print(f"  Evaluation: {len(ai_content['evaluation'])} chars")
+
+            # 7. AI writes conclusion
+            concl = pw._call(
+                "为论文写结论(400-600字)。总结所有子问题的核心发现,逐问列出具体数字。中文。",
+                f"结果:\n{result_summary}", max_tok=4000)
+            if concl:
+                concl_v2 = pw._call("审阅并重写结论使其更有力。", f"原稿:\n{concl[:3000]}", max_tok=4000)
+                ai_content["conclusion"] = concl_v2 or concl
+                print(f"  Conclusion: {len(ai_content.get('conclusion',''))} chars")
+
+            # 8. Full paper review + global polish
+            all_sections = "\n\n".join(f"{k}: {v[:500]}" for k, v in ai_content.items() if v)
+            review = pw._call(
+                "审阅整篇论文的所有章节。检查: 1)数字前后是否一致 2)逻辑是否连贯 "
+                "3)有没有缺失的重要内容 4)语言风格是否统一。列出所有问题。",
+                f"论文:\n{all_sections[:4000]}", max_tok=4000)
+            polish = pw._call(
+                "根据审阅意见,修正所有章节中的问题。给出修正后的完整版本。",
+                f"审阅意见:\n{review[:3000]}\n论文:\n{all_sections[:3000]}", max_tok=4000)
+            print(f"  Paper review: {len(review)} chars review, {len(polish)} chars polish")
 
             print(f"  Paper writing: {pw.calls} calls")
         except Exception as e:
