@@ -180,19 +180,46 @@ def main():
         sp_text = sp.get("title", "") + sp.get("full_text", "")
 
         if is_routing_sp:
-            print(f"  Q{sp_id}: Optimization -> deep solver...")
+            print(f"\n  {'='*40}")
+            print(f"  Q{sp_id}: Deep Multi-Round Analysis + Solve")
+            print(f"  {'='*40}")
             df = _find_df(data_files, ptype)
             if df is not None:
                 from mathmodel.pipeline.deep_solve import deep_solve_tsp
                 numeric = df.select_dtypes(include=np.number)
-                # Detect ID column (1,2,3... sequential) and skip it
                 first_col = numeric.iloc[:, 0].dropna().tolist()
                 if len(first_col) >= 3 and first_col[:3] == [1.0, 2.0, 3.0]:
                     sparse = numeric.iloc[:, 1:].values.astype(float)
                 else:
                     sparse = numeric.values.astype(float)
                 n = sparse.shape[0]
+
+                # Phase A: Deep solver (5+ min computation)
+                print(f"  [Phase A] Deep TSP solving ({n} locations, 10min budget)...")
                 deep_result = deep_solve_tsp(sparse, n, fig_dir, sp_id, time_budget=600)
+
+                # Phase B: Multi-round AI analysis (if api_key)
+                ai_insights = {}
+                if api_key:
+                    print(f"  [Phase B] Multi-round AI analysis (5 calls)...")
+                    try:
+                        from mathmodel.pipeline.deep_thinker import DeepThinker
+                        thinker = DeepThinker(api_key=api_key)
+                        ai_insights = thinker.think_about_problem(
+                            sp, problem_text, data_profiles,
+                            {"total_distance": deep_result["best"]["distance"],
+                             "tour": deep_result["best"]["tour"][:10],
+                             "method": deep_result["best"]["method"],
+                             "all_methods": str(deep_result["all_ranked"])})
+                        # AI figure design
+                        fig_plan = thinker.design_figures(
+                            sp_id, {"type": ptype, "title": sp.get("title","")},
+                            {"distance": deep_result["best"]["distance"],
+                             "tour": str(deep_result["best"]["tour"]),
+                             "n_locations": n}, fig_dir)
+                    except Exception as e:
+                        print(f"  AI analysis: {e}")
+
                 all_results[f"sub_{sp_id}"] = {
                     "method": "Floyd-Warshall + TSP(NN+2-opt+SA)",
                     "total_distance": deep_result["best"]["distance"],
@@ -201,9 +228,14 @@ def main():
                     "n_locations": n, "n_vehicles": 1,
                     "all_methods": deep_result["all_ranked"],
                     "total_time_s": deep_result["total_time"],
-                    "summary": f"最短配送回路总距离: {deep_result['best']['distance']}km, 覆盖全部{n}个地点。"
+                    "ai_analysis": ai_insights.get("interpretation", ""),
+                    "ai_quality": ai_insights.get("quality_check", {}).get("quality_score", 0),
+                    "summary": f"最短配送回路总距离: {deep_result['best']['distance']}km, "
+                              f"覆盖全部{n}个地点。{ai_insights.get('interpretation', '')[:200]}"
                 }
-                print(f"     DeepTSP: {deep_result['best']['distance']} ({deep_result['total_time']:.0f}s)")
+                print(f"     Result: {deep_result['best']['distance']}km "
+                      f"(computation: {deep_result['total_time']:.0f}s, "
+                      f"AI calls: {ai_insights.get('total_api_calls', 0)})")
             continue
         elif f"sub_{sp_id}" in contest_results:
             best = contest_results[f"sub_{sp_id}"]
