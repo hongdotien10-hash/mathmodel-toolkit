@@ -6,6 +6,7 @@
 
 import sys, json, re
 from pathlib import Path
+import re
 import numpy as np
 import pandas as pd
 import matplotlib
@@ -17,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from mathmodel.utils import set_seed, Timer
 from mathmodel.utils.helpers import safe_call
 from mathmodel.analyzer import ProblemClassifier, ModelKnowledgeBase
-from mathmodel.models import EvaluationSolver, StatsSolver, OptimizationSolver, MLSolver
+from mathmodel.models import EvaluationSolver, StatsSolver, OptimizationSolver, MLSolver, GraphSolver
 from mathmodel.sensitivity import SensitivityAnalyzer
 from mathmodel.visualization import Plotter, set_style, get_colors
 from mathmodel.paper.word_writer import generate_paper
@@ -119,12 +120,22 @@ def main():
         winner_model = ""
         if f"sub_{sp_id}" in contest_results:
             best = contest_results[f"sub_{sp_id}"]
-            best_result = next((c for c in best.get("candidates", [])
-                                if c["model"] == best.get("winner")), {})
-            all_results[f"sub_{sp_id}"] = best_result.get("result", {})
-            winner_model = best.get("winner", "")
-            print(f"  Q{sp_id}: [{winner_model}] — contest winner")
-            continue
+            winner = best.get("winner", "")
+            # If contest failed (no valid model), fall through to local solver
+            if winner not in ("无有效模型", "无", "", None):
+                best_result = next((c for c in best.get("candidates", [])
+                                    if c["model"] == winner), {})
+                result_data = best_result.get("result", {})
+                # Check if result is empty/garbage
+                if result_data and result_data.get("metric_value", -1) != 0 and \
+                   result_data.get("selection") != []:
+                    all_results[f"sub_{sp_id}"] = result_data
+                    print(f"  Q{sp_id}: [{winner}] — contest winner")
+                    continue
+                else:
+                    print(f"  Q{sp_id}: Contest result empty, falling back to local solver...")
+            else:
+                print(f"  Q{sp_id}: Contest failed ({winner}), using local solver...")
 
         # Fallback: local solver
         df = _find_df(data_files, ptype)
@@ -152,6 +163,14 @@ def main():
                     "mape": round(pred["mape"],2), "grade": pred["grade"]}
                 print(f"  Q{sp_id}: GM(1,1) MAPE={pred['mape']:.2f}%")
         elif ptype == "优化" and numeric.shape[1] >= 2:
+            # Detect routing problems (VRP/TSP/CVRP) vs knapsack
+            sp_text = sp.get("title", "") + sp.get("full_text", "")
+            is_routing = any(kw in sp_text for kw in ["路径", "配送", "路线", "车辆", "route", "VRP", "TSP", "CVRP", "选址"]) and \
+                        any(kw in str(df.columns).lower() for kw in ["x", "y", "坐标", "经度", "纬度", "lat", "lon", "lng", "longitude", "latitude"])
+            if is_routing:
+                _solve_routing(sp, df, data_files, fig_dir, all_results)
+                continue
+
             costs = numeric.iloc[:,1].values.astype(float).tolist()
             benefits = numeric.iloc[:,2].values.astype(float).tolist() if numeric.shape[1] > 2 else numeric.iloc[:,0].tolist()
             budget = sum(costs)*0.6
@@ -328,6 +347,123 @@ def _analyze(problem_text, data_profiles):
             "type": clf["type"], "model": m["model"], "score": m["score"],
             "reason": m["reason"], "source": "rule"})
     return sub_problems
+
+
+def _solve_routing(sp, df, data_files, fig_dir, results):
+    """路径优化类：VRP/TSP/CVRP — 最近邻+TSP启发式"""
+    gs = GraphSolver()
+    numeric = df.select_dtypes(include=np.number)
+
+    # Find coordinate columns
+    coord_cols = []
+    for col in numeric.columns:
+        cl = str(col).lower()
+        if any(kw in cl for kw in ['x', 'y', '坐标', '经度', '纬度', 'lat', 'lon', 'lng', 'longitude', 'latitude']):
+            coord_cols.append(col)
+
+    if len(coord_cols) < 2:
+        # Try first 2 numeric columns as fallback
+        coord_cols = numeric.columns[:2].tolist()
+
+    # Find demand/weight column
+    demand_col = None
+    for col in numeric.columns:
+        cl = str(col).lower()
+        if any(kw in cl for kw in ['需求', '重量', 'demand', 'weight', 'load', '量', '货物', '容量']):
+            demand_col = col
+            break
+
+    # Extract coordinates
+    coords = numeric[coord_cols].values.astype(float)
+    n = len(coords)
+    print(f"     Routing: {n} locations, coords={coord_cols}, demand_col={demand_col}")
+
+    # Build distance matrix
+    D = np.zeros((n, n))
+    for i in range(n):
+        for j in range(n):
+            D[i, j] = np.sqrt(np.sum((coords[i] - coords[j])**2))
+
+    # Get capacity from problem text
+    sp_text = sp.get("title", "") + sp.get("full_text", "")
+    import re
+    cap_match = re.search(r'(\d+)\s*(kg|千克|公斤|吨|t)', sp_text.lower())
+    capacity = float(cap_match.group(1)) if cap_match else float('inf')
+    if cap_match and cap_match.group(2) in ('吨', 't'):
+        capacity *= 1000  # convert tons to kg
+
+    # Get demands
+    demands = None
+    if demand_col and demand_col in numeric.columns:
+        demands = numeric[demand_col].values.astype(float).tolist()
+        total_demand = sum(demands)
+        print(f"     Total demand: {total_demand:.0f}, Capacity: {capacity:.0f}")
+        if total_demand <= capacity:
+            demands = None  # single route is fine
+
+    labels = df.iloc[:, 0].tolist() if not pd.api.types.is_numeric_dtype(df.iloc[:, 0]) else \
+             [f"地点{i+1}" for i in range(n)]
+
+    if demands is None:
+        # Single TSP route
+        tsp_result = gs.tsp_nearest_neighbor(D, start=0)
+        tour = tsp_result["tour"]
+        tour_labels = [labels[i] for i in tour if i < len(labels)]
+        tour_dist = round(tsp_result["total_distance"], 2)
+
+        results[f"sub_{sp['id']}"] = {
+            "method": "TSP Nearest Neighbor",
+            "n_locations": n,
+            "tour": tour,
+            "tour_labels": tour_labels,
+            "total_distance": tour_dist,
+            "n_vehicles": 1,
+            "summary": f"TSP路径: {n}个地点, 总距离={tour_dist:.1f}, 1辆车"
+        }
+        print(f"     TSP: {tour_dist:.1f} total distance, 1 vehicle")
+    else:
+        # VRP with capacity: nearest-neighbor + split when capacity exceeded
+        routes = []
+        unvisited = set(range(1, n))  # start at depot (index 0)
+        while unvisited:
+            route = [0]  # start from depot
+            load = 0
+            current = 0
+            while unvisited:
+                # Find nearest unvisited that fits
+                candidates = [(j, D[current, j]) for j in unvisited if demands[j] + load <= capacity]
+                if not candidates:
+                    break
+                nxt, _ = min(candidates, key=lambda x: x[1])
+                route.append(nxt)
+                load += demands[nxt]
+                unvisited.remove(nxt)
+                current = nxt
+            route.append(0)  # return to depot
+            routes.append(route)
+
+        # Report
+        total_dist = 0
+        route_details = []
+        for i, route in enumerate(routes):
+            rdist = sum(D[route[j]][route[j+1]] for j in range(len(route)-1))
+            rload = sum(demands[j] for j in route if j != 0)
+            total_dist += rdist
+            rlabels = [labels[j] for j in route]
+            route_details.append({"route": i+1, "path": rlabels,
+                                  "distance": round(rdist, 1), "load": round(rload, 0)})
+            print(f"     Route {i+1}: {len(route)-2} stops, dist={rdist:.1f}, load={rload:.0f}/{capacity:.0f}")
+
+        results[f"sub_{sp['id']}"] = {
+            "method": "Nearest-Neighbor VRP",
+            "n_locations": n,
+            "n_vehicles": len(routes),
+            "routes": route_details,
+            "total_distance": round(total_dist, 1),
+            "vehicle_capacity": capacity,
+            "summary": f"VRP: {n}地点→{len(routes)}辆车, 总距离={total_dist:.1f}"
+        }
+        print(f"     VRP: {len(routes)} vehicles, total distance={total_dist:.1f}")
 
 
 def _find_df(data_files, ptype):

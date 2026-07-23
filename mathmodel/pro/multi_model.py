@@ -134,6 +134,14 @@ class ModelContest:
 
         numeric = df.select_dtypes(include=np.number)
 
+        # Detect routing problem (VRP/TSP)
+        sp_text = sp.get("title", "") + sp.get("full_text", "")
+        is_routing = any(kw in sp_text for kw in ["路径", "配送", "路线", "车辆", "route", "VRP", "TSP", "CVRP", "选址"]) and \
+                    ptype == "优化" and \
+                    any(kw in str(df.columns).lower() for kw in ["x", "y", "坐标", "经度", "纬度", "lat", "lon"])
+        if is_routing:
+            return self._run_routing(name, numeric, df, sp)
+
         if "TOPSIS" in name and ptype == "评价":
             return self._run_topsis(numeric, df)
         elif "AHP" in name and ptype == "评价":
@@ -377,6 +385,68 @@ class ModelContest:
         pca.fit(X)
         explained = float(np.cumsum(pca.explained_variance_ratio_)[:2][-1])
         return {"metric_name": "累积方差(前2)", "metric_value": round(explained, 4)}
+
+    # ---- Routing (VRP/TSP) ----
+    def _run_routing(self, method_name: str, numeric: "pd.DataFrame", df: "pd.DataFrame",
+                     sp: dict) -> dict:
+        """VRP/TSP 路径优化"""
+        import re
+        from mathmodel.models.graph import GraphSolver
+        gs = GraphSolver()
+
+        # Find coordinate columns
+        coord_cols = []
+        for col in numeric.columns:
+            cl = str(col).lower()
+            if any(kw in cl for kw in ['x', 'y', '坐标', '经度', '纬度', 'lat', 'lon', 'lng']):
+                coord_cols.append(col)
+        if len(coord_cols) < 2:
+            coord_cols = numeric.columns[:2].tolist()
+
+        coords = numeric[coord_cols].values.astype(float)
+        n = len(coords)
+
+        # Build distance matrix
+        D = np.zeros((n, n))
+        for i in range(n):
+            for j in range(n):
+                D[i, j] = np.sqrt(np.sum((coords[i] - coords[j])**2))
+
+        # Get capacity
+        sp_text = sp.get("title", "") + sp.get("full_text", "")
+        cap_match = re.search(r'(\d+)\s*(kg|千克|公斤|吨|t)', sp_text.lower())
+        capacity = float(cap_match.group(1)) if cap_match else float('inf')
+        if cap_match and cap_match.group(2) in ('吨', 't'):
+            capacity *= 1000
+
+        # Get demands
+        demand_col = None
+        for col in numeric.columns:
+            cl = str(col).lower()
+            if any(kw in cl for kw in ['需求', '重量', 'demand', 'weight', 'load', '量']):
+                demand_col = col; break
+        demands = numeric[demand_col].values.astype(float).tolist() if demand_col else [0]*n
+
+        if capacity == float('inf') or sum(demands) <= capacity:
+            # TSP
+            result = gs.tsp_nearest_neighbor(D, start=0)
+            return {"metric_name": "总距离", "metric_value": round(result["total_distance"], 1),
+                    "tour": result["tour"], "n_vehicles": 1}
+        else:
+            # VRP: split into routes by capacity
+            routes, unvisited = [], set(range(1, n))
+            while unvisited:
+                route, load, curr = [0], 0, 0
+                while unvisited:
+                    cand = [(j, D[curr, j]) for j in unvisited if demands[j] + load <= capacity]
+                    if not cand: break
+                    nxt, _ = min(cand, key=lambda x: x[1])
+                    route.append(nxt); load += demands[nxt]
+                    unvisited.remove(nxt); curr = nxt
+                route.append(0); routes.append(route)
+            total = sum(sum(D[r[j]][r[j+1]] for j in range(len(r)-1)) for r in routes)
+            return {"metric_name": "总距离", "metric_value": round(total, 1),
+                    "n_vehicles": len(routes), "routes": len(routes)}
 
     # ================================================================
     # 本地指标对比（无API时使用）
