@@ -13,8 +13,14 @@ from matplotlib.colors import LinearSegmentedColormap
 from scipy import stats, interpolate
 import warnings; warnings.filterwarnings('ignore')
 
-# 字体
-plt.rcParams['font.sans-serif'] = ['SimHei','Microsoft YaHei','DejaVu Sans']
+# 字体: 尝试CJK, 无则回退英文
+import matplotlib.font_manager as fm
+_cjk_ok = any(f.name in {'Microsoft YaHei','SimHei','WenQuanYi Micro Hei','Noto Sans CJK SC'}
+              for f in fm.fontManager.ttflist)
+if _cjk_ok:
+    plt.rcParams['font.sans-serif'] = ['Microsoft YaHei','SimHei','WenQuanYi Micro Hei','DejaVu Sans']
+else:
+    plt.rcParams['font.sans-serif'] = ['DejaVu Sans']
 plt.rcParams['axes.unicode_minus'] = False
 
 # 学术配色

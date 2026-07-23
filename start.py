@@ -76,8 +76,11 @@ def main():
         sys.exit(1)
     selected = problem_dirs[0]
     out_dir = OUTPUT_DIR / selected.name
+    out_dir.mkdir(parents=True, exist_ok=True)
     fig_dir = out_dir / "figures"
     fig_dir.mkdir(parents=True, exist_ok=True)
+    print(f"  Output: {out_dir}")
+    print(f"  Figures: {fig_dir}")
 
     problem_text, data_files, data_profiles = "", {}, {}
     for f in sorted(selected.iterdir()):
@@ -139,6 +142,15 @@ def main():
     if not api_key:
         print("  [本地对比] 基于指标数值自动选优")
     _pause("Contest done. Continue to solving?")
+
+    # --- Save partial results early ---
+    try:
+        import json as _json
+        _json.dump({"sub_problems": sub_problems, "contest": {k: {"winner": v.get("winner","")}
+                   for k, v in contest_results.items()}},
+                   open(out_dir / "results.json", "w", encoding="utf-8"),
+                   ensure_ascii=False, indent=2, default=str)
+    except: pass
 
     # === Step 5: Solve with best models ===
     print_section("Phase 3: Solving with Best Models (Deep Mode)")
@@ -238,6 +250,16 @@ def main():
                 "budget": round(budget,1), "solution": [1 if i in sel else 0 for i in range(len(costs))],
                 "costs": costs, "benefits": benefits, "labels_all": labels}
             print(f"  Q{sp_id}: Optimization done ({len(sel)} selected)")
+
+    # --- Save results immediately after solving ---
+    try:
+        json.dump({"sub_problems": sub_problems, "results": _serialize(all_results),
+                   "contest": {k: {"winner": v.get("winner","")} for k, v in contest_results.items()}},
+                  open(out_dir / "results.json", "w", encoding="utf-8"),
+                  ensure_ascii=False, indent=2, default=str)
+        print(f"  Results saved: {out_dir / 'results.json'}")
+    except Exception as e:
+        print(f"  Failed to save results: {e}")
 
     # === Step 6: 🆕 PRO — Deep Sensitivity ===
     print_section("PRO Phase 4: Deep Sensitivity")

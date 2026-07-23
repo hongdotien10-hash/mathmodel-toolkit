@@ -318,34 +318,36 @@ def generate_selected_figures(selections, all_results, data_files, fig_dir, sub_
                 sp_id = sp.get("id", "?")
                 result = all_results.get(f"sub_{sp_id}", {})
 
+                # Use sub-problem-specific path
+                sp_path = str(Path(fig_dir) / f"sub_{sp_id}_{key}.pdf")
+
                 if key == "pred_fitted_vs_actual" and result.get("forecast"):
                     actual = result.get("original", result.get("fitted", []))
                     prediction_fitted_vs_actual(actual, result["fitted"], result["forecast"],
-                                               path, title=f"Q{sp_id}: Forecast")
+                                               sp_path, title=f"Q{sp_id}: Forecast")
                     match_found = True; break
 
                 if key == "pred_residual_diagnosis" and result.get("original"):
                     prediction_residual_diagnosis(result["original"], result["fitted"],
-                                                 path, title=f"Q{sp_id}: Residual Diagnosis")
+                                                 sp_path, title=f"Q{sp_id}: Residual Diagnosis")
                     match_found = True; break
 
                 if key == "eval_score_bar" and result.get("scores"):
                     evaluation_score_bar(result["labels"], [float(s) for s in result["scores"]],
-                                        path, title=f"Q{sp_id}: Evaluation Scores")
+                                        sp_path, title=f"Q{sp_id}: Evaluation Scores")
                     match_found = True; break
 
                 if key == "eval_weight_pie" and result.get("weights"):
-                    evaluation_weight_pie(result["weights"], path,
+                    evaluation_weight_pie(result["weights"], sp_path,
                                          title=f"Q{sp_id}: Weight Distribution")
                     match_found = True; break
 
                 if key == "route_network" and result.get("tour"):
-                    fig_tsp_network.__call__ if False else None  # placeholder
-                    match_found = True; break
+                    match_found = True; break  # handled by professional_figures
 
                 if key == "route_algo_compare" and result.get("all_methods"):
                     methods = {m[:25]: d for d, m in result.get("all_methods", [])[:6]}
-                    fig_algorithm_comparison(methods, path,
+                    fig_algorithm_comparison(methods, sp_path,
                                             title=f"Q{sp_id}: Algorithm Comparison")
                     match_found = True; break
 
@@ -354,14 +356,15 @@ def generate_selected_figures(selections, all_results, data_files, fig_dir, sub_
                     benefits = result.get("benefits", [0]*len(costs))
                     solution = result.get("solution", [0]*len(costs))
                     labels = result.get("labels_all", [f"Item{i}" for i in range(len(costs))])
-                    optimization_resource_usage(costs, benefits, solution, labels, path,
+                    optimization_resource_usage(costs, benefits, solution, labels, sp_path,
                                                title=f"Q{sp_id}: Resource Allocation")
                     match_found = True; break
 
                 if key == "stat_corr_heatmap" and result.get("corr_matrix"):
                     cols = result.get("columns", [f"V{i}" for i in range(10)])[:10]
                     corr = np.array(result["corr_matrix"])[:10, :10]
-                    statistics_correlation_heatmap(corr, cols, path,
+                    sp_path = str(Path(fig_dir) / f"sub_{sp_id}_{key}.pdf")
+                    statistics_correlation_heatmap(corr, cols, sp_path,
                                                   title=f"Q{sp_id}: Correlation Matrix")
                     match_found = True; break
 

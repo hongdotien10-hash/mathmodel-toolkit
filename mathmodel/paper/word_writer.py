@@ -571,6 +571,15 @@ def _routing_section_content(doc, sec, result, fig_dir, fig_num, ai_text):
         if tour_labels:
             _para(doc, f"最优配送顺序：{' -> '.join(str(l) for l in tour_labels[:10])}")
 
+    # Embed routing figures
+    for pat in ["*.pdf", "*.png"]:
+        for f in sorted(fig_dir.glob(pat)):
+            fig_num[0] += 1
+            _insert_figure(doc, f, f"图{fig_num[0]}：路径优化结果")
+            break
+        else: continue
+        break
+
 
 def _knapsack_section_content(doc, sec, result, fig_dir, fig_num, ai_text):
     """0-1背包/资源分配论文内容"""
