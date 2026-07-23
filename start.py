@@ -35,6 +35,35 @@ OUTPUT_DIR = Path(__file__).parent / "output"
 # --- CLI flags ---
 INTERACTIVE = "--interactive" in sys.argv or "-i" in sys.argv
 
+# 比赛类型
+CONTEST_TYPE = "auto"
+for a in sys.argv:
+    if a.startswith("--contest="):
+        CONTEST_TYPE = a.split("=")[1]
+    elif a in ("--cumcm", "--国赛"):
+        CONTEST_TYPE = "cumcm"
+    elif a in ("--mcm", "--美赛"):
+        CONTEST_TYPE = "mcm"
+    elif a in ("--diangong", "--电工杯"):
+        CONTEST_TYPE = "diangong"
+
+# 做几问
+MAX_QUESTIONS = 99  # all
+for a in sys.argv:
+    if a.startswith("--questions="):
+        MAX_QUESTIONS = int(a.split("=")[1])
+    elif a.startswith("-q"):
+        MAX_QUESTIONS = int(a[2:]) if len(a) > 2 else 99
+
+# 比赛特定参数
+CONTEST_PARAMS = {
+    "cumcm": {"vehicle_speed": 50, "max_pages": 25, "lang": "zh"},
+    "diangong": {"vehicle_speed": 50, "max_pages": 25, "lang": "zh"},
+    "mcm": {"vehicle_speed": 31, "max_pages": 25, "lang": "en"},  # 31mph ~ 50kmh
+    "auto": {"vehicle_speed": 50, "max_pages": 25, "lang": "zh"},
+}
+cp = CONTEST_PARAMS.get(CONTEST_TYPE, CONTEST_PARAMS["auto"])
+
 
 def _pause(msg="Continue?"):
     """交互模式暂停"""
@@ -125,7 +154,14 @@ def main():
     _pause("Contest done. Continue to solving?")
 
     # === Step 5: Solve with best models ===
-    print_section("Phase 3: Solving with Best Models")
+    print_section("Phase 3: Solving with Best Models (Deep Mode)")
+    print(f"  Contest: {CONTEST_TYPE} | Questions: {MAX_QUESTIONS} | Speed: {cp['vehicle_speed']}km/h")
+
+    # Limit questions
+    sub_problems = [sp for sp in sub_problems if sp["id"] <= MAX_QUESTIONS]
+    if MAX_QUESTIONS < 99:
+        print(f"  Solving only first {MAX_QUESTIONS} question(s)")
+
     all_results = {}
     for sp in sub_problems:
         sp_id = sp["id"]
@@ -183,7 +219,23 @@ def main():
             is_routing = any(kw in sp_text for kw in ["路径", "配送", "路线", "车辆", "route", "VRP", "TSP", "CVRP", "选址"]) and \
                         any(kw in str(df.columns).lower() for kw in ["x", "y", "坐标", "经度", "纬度", "lat", "lon", "lng", "longitude", "latitude"])
             if is_routing:
-                _solve_routing(sp, df, data_files, fig_dir, all_results)
+                # Deep solving: 10min+ thorough TSP/VRP
+                from mathmodel.pipeline.deep_solve import deep_solve_tsp
+                sparse = df.select_dtypes(include=np.number).values.astype(float)
+                n = min(sparse.shape[0], min(sparse.shape[1], 100))
+                deep_result = deep_solve_tsp(sparse, n, fig_dir, sp_id, time_budget=600)
+                all_results[f"sub_{sp_id}"] = {
+                    "method": f"DeepTSP: {deep_result['best']['method']}",
+                    "total_distance": deep_result["best"]["distance"],
+                    "tour": deep_result["best"]["tour"],
+                    "tour_labels": [str(t+1) for t in deep_result["best"]["tour"]],
+                    "n_locations": n,
+                    "n_vehicles": 1,
+                    "all_methods": deep_result["all_ranked"],
+                    "total_time_s": deep_result["total_time"],
+                    "summary": f"TSP Deep: {deep_result['best']['distance']}km ({deep_result['best']['method']}, {deep_result['total_time']:.0f}s)"
+                }
+                print(f"     DeepTSP: {deep_result['best']['distance']} ({deep_result['total_time']:.0f}s)")
                 continue
 
             costs = numeric.iloc[:,1].values.astype(float).tolist()
