@@ -129,9 +129,13 @@ def main():
     # === Step 4: 🆕 PRO — Multi-Model Contest (本地或AI对比) ===
     print_section("PRO Phase 2: Multi-Model Contest")
     contest_results = {}
-    mc = ModelContest(api_key=api_key)  # 无API时自动用指标对比
+    mc = ModelContest(api_key=api_key)
     for sp in sub_problems:
-        if sp["type"] in ("评价", "预测", "优化", "统计"):
+        # Skip contest for optimization — use deep solver directly
+        if sp["type"] == "优化":
+            print(f"\n  >> Q{sp['id']}: Optimization — skip contest, use deep solver")
+            continue
+        if sp["type"] in ("评价", "预测", "统计"):
             print(f"\n  >> Q{sp['id']}: Running {sp['type']} model contest...")
             cr = safe_call(lambda s=sp: mc.contest(s, data_files),
                           desc=f"Q{sp['id']} model contest", timeout=300,
@@ -156,24 +160,27 @@ def main():
     print_section("Phase 3: Solving with Best Models (Deep Mode)")
     print(f"  Contest: {CONTEST_TYPE} | Questions: {MAX_QUESTIONS} | Speed: {cp['vehicle_speed']}km/h")
 
-    # Limit questions
+    # Limit questions EARLY — before any solving
     sub_problems = [sp for sp in sub_problems if sp["id"] <= MAX_QUESTIONS]
+    if MAX_QUESTIONS < 99 and len(sub_problems) < len([sp for sp in sub_problems]):
+        # Re-evaluate: the filter was applied after AI analysis created all 4
+        pass
     if MAX_QUESTIONS < 99:
-        print(f"  Solving only first {MAX_QUESTIONS} question(s)")
+        print(f"  Solving only questions: {[sp['id'] for sp in sub_problems]}")
 
     all_results = {}
     for sp in sub_problems:
         sp_id = sp["id"]
         ptype = sp["type"]
 
-        # Contest: use winner ONLY if it's a non-routing problem and has real results
-        winner_model = ""
+        # ROUTING/OPTIMIZATION: Skip contest entirely, use deep solver
+        # Contest is only useful for evaluation/prediction where multiple model types exist
+        # For optimization, all candidates run the same TSP/VRP solver anyway
+        is_routing_sp = ptype == "优化"  # ALL optimization goes to deep solver
         sp_text = sp.get("title", "") + sp.get("full_text", "")
-        is_routing_sp = any(kw in sp_text for kw in ["路径", "配送", "路线", "车辆", "route", "VRP", "TSP", "CVRP", "选址"])
 
         if is_routing_sp:
-            # For routing problems: ALWAYS use deep solver, skip contest
-            print(f"  Q{sp_id}: Routing detected, using deep solver (skipping contest)...")
+            print(f"  Q{sp_id}: Optimization detected, using deep solver...")
         elif f"sub_{sp_id}" in contest_results:
             best = contest_results[f"sub_{sp_id}"]
             winner = best.get("winner", "")
@@ -794,57 +801,62 @@ def _solve_routing_from_coords(sp, numeric, df, results, gs, n, sp_text):
 
 
 def _make_routing_figure(val, key, fig_dir):
-    """生成路径优化图：TSP路线 or VRP多车路线"""
+    """生成路径优化图：有意义的TSP路线图 — 每问不同"""
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
     from mathmodel.visualization.styles import despine, get_colors
 
     tour = val.get("tour", [])
-    routes = val.get("routes", [])
     total_dist = val.get("total_distance", 0)
-    n_veh = val.get("n_vehicles", 1)
+    method = val.get("method", "")
+    n_locations = val.get("n_locations", len(tour)-1 if tour else 0)
 
-    if not tour and not routes:
+    if not tour:
         return
 
-    colors = get_colors(max(len(routes) if routes else 1, 5))
+    colors = get_colors(5)
+    n = len(tour)
 
-    if routes:
-        # VRP multi-route map
-        fig, ax = plt.subplots(figsize=(8, 5))
-        for ri, rd in enumerate(routes):
-            path = rd.get("path", [])
-            xs = list(range(len(path)))
-            ys = [ri * 10] * len(path)
-            ax.plot(xs, [ri*10 + 2]*len(xs), 'o-', color=colors[ri % len(colors)],
-                    markersize=6, linewidth=2, label=f"Route {ri+1} ({rd.get('distance','?')}km)")
-            for j, p in enumerate(path):
-                ax.annotate(str(p), (j, ri*10 + 2.5), fontsize=7, ha='center')
-        ax.set_title(f"VRP Routes ({n_veh} vehicles, {total_dist}km total)", fontsize=12)
-        ax.set_xlabel("Stop Sequence"); ax.set_ylabel("Route")
-        ax.legend(fontsize=8, frameon=False)
-        despine(ax); ax.grid(alpha=0.2, linestyle=":")
-    else:
-        # TSP route diagram
-        fig, ax = plt.subplots(figsize=(8, 4))
-        n = len(tour)
-        xs = list(range(n))
-        ys = [0] * n
-        ax.plot(xs, ys, 'o-', color=colors[0], markersize=8, linewidth=2,
-                markerfacecolor='white', markeredgewidth=2)
-        for i, t in enumerate(tour):
-            ax.annotate(str(t), (i, 0.3), fontsize=8, ha='center', fontweight='bold')
-        ax.set_title(f"TSP Optimal Route ({total_dist}km, {n-1} stops)", fontsize=12)
-        ax.set_xlabel("Visit Order"); ax.set_ylabel("")
-        ax.set_yticks([])
-        despine(ax); ax.grid(alpha=0.2, axis='x', linestyle=":")
+    # Create a meaningful route diagram with distance info
+    fig, ax = plt.subplots(figsize=(max(8, n*0.5), 4.5))
+
+    # Generate Y positions that show the route flow
+    xs = list(range(n))
+    # Use sine wave to make route visually interesting
+    ys = [np.sin(i * 2 * np.pi / (n-1)) * 1.5 for i in range(n)]
+
+    # Draw the route with direction arrows
+    for i in range(n - 1):
+        ax.annotate('', xy=(xs[i+1], ys[i+1]), xytext=(xs[i], ys[i]),
+                   arrowprops=dict(arrowstyle='->', color=colors[0], lw=2,
+                                  connectionstyle='arc3,rad=0.1'))
+
+    # Draw nodes
+    for i, node in enumerate(tour):
+        is_start = (i == 0)
+        ax.scatter(xs[i], ys[i], s=200 if is_start else 120,
+                  c=colors[2] if is_start else 'white',
+                  edgecolors=colors[0], linewidth=2 if is_start else 1.5,
+                  zorder=5)
+        label = f'{node+1}'
+        if is_start: label += ' (Start)'
+        ax.annotate(label, (xs[i], ys[i] + 0.35), fontsize=8, ha='center',
+                   fontweight='bold' if is_start else 'normal')
+
+    # Distance info
+    q_id = key.replace('sub_', 'Q')
+    ax.set_title(f"{q_id}: Optimal Route — {total_dist} km, {n_locations} locations, {method[:30]}",
+                fontsize=11, fontweight='bold', loc='left')
+    ax.set_xlabel('Visit Sequence'); ax.set_yticks([])
+    ax.set_xlim(-0.5, n - 0.5)
+    despine(ax); ax.grid(alpha=0.2, axis='x', linestyle=":")
 
     fig.tight_layout()
     path = Path(fig_dir) / f"{key}_route.png"
     fig.savefig(str(path), dpi=300, bbox_inches='tight', facecolor='white')
     plt.close(fig)
-    print(f"  [{key}] Routing figure generated")
+    print(f"  [{key}] Route figure: {total_dist}km")
 
 
 def _find_df(data_files, ptype):
