@@ -423,12 +423,32 @@ def main():
     print_section("Phase 8: Paper Generation")
     import datetime
     ts = datetime.datetime.now().strftime("%H%M%S")
-    paper_path = generate_paper(
-        output_path=str(out_dir / f"Pro论文_{selected.name}_{ts}.docx"),
-        problem_text=problem_text, analysis={"sub_problems": sub_problems},
-        recommendations=[{"summary": "Pro: multi-model contest", "sub_problems": sub_problems}],
-        results=all_results, figures_dir=str(fig_dir), ai_content=ai_content)
-    print(f"  Word: {paper_path}")
+    try:
+        paper_path = generate_paper(
+            output_path=str(out_dir / f"Pro论文_{selected.name}_{ts}.docx"),
+            problem_text=problem_text, analysis={"sub_problems": sub_problems},
+            recommendations=[{"summary": "Pro: multi-model contest", "sub_problems": sub_problems}],
+            results=all_results, figures_dir=str(fig_dir), ai_content=ai_content)
+        print(f"  Word: {paper_path}")
+    except Exception as e:
+        print(f"  Word failed: {e}. Generating minimal paper...")
+        # Fallback: minimal paper with results
+        try:
+            from docx import Document
+            doc = Document()
+            doc.add_heading("MathModel Toolkit Results", 0)
+            doc.add_paragraph(f"Problem: {selected.name}")
+            for sp in sub_problems:
+                doc.add_heading(f"Q{sp['id']}: {sp.get('title','')}", 1)
+                r = all_results.get(f"sub_{sp['id']}", {})
+                doc.add_paragraph(r.get("summary", str(r)[:500]))
+            paper_path = out_dir / f"论文_{selected.name}_{ts}.docx"
+            doc.save(str(paper_path))
+            print(f"  Fallback Word: {paper_path}")
+        except Exception as e2:
+            print(f"  Even fallback failed: {e2}")
+            paper_path = "FAILED"
+
     try:
         tex_path = generate_latex_paper(str(out_dir / "latex"), problem_text,
                                         {"sub_problems": sub_problems}, all_results,
@@ -446,8 +466,16 @@ def main():
 
     tracker.finish()
     print_result_summary(sub_problems, all_results)
-    print_header(f"PRO DONE! Paper -> {paper_path}")
-    print(f"  Figures: {fig_dir}")
+    print()
+    print("=" * 60)
+    print("  OUTPUT FILES")
+    print("=" * 60)
+    print(f"  Word Paper:  {paper_path}")
+    print(f"  Results:     {out_dir / 'results.json'}")
+    print(f"  Pro Results: {out_dir / 'pro_results.json'}")
+    print(f"  Figures:     {fig_dir}")
+    print(f"  LaTeX:       {out_dir / 'latex'}")
+    print("=" * 60)
 
 
 def _analyze(problem_text, data_profiles):
