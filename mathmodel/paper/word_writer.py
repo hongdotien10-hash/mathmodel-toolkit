@@ -134,7 +134,7 @@ def generate_paper(output_path, problem_text="", analysis=None, recommendations=
     tbl_num = [0]
 
     # ===== 标题 =====
-    title = _derive_title(problem_text, sub_problems, results)
+    title = _derive_title(problem_text, sub_problems, results, ai_content)
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     r = p.add_run(title)
@@ -256,16 +256,98 @@ def generate_paper(output_path, problem_text="", analysis=None, recommendations=
 # 智能内容生成（基于实际数据和结果）
 # ================================================================
 
-def _derive_title(problem_text, sub_problems, results):
-    """从题目中提取论文标题"""
+def _derive_title(problem_text, sub_problems, results, ai_content=None):
+    """AI根据文章内容生成论文标题"""
+    # 1) AI content already has a title
+    ai_title = (ai_content or {}).get("title", "")
+    if ai_title and len(ai_title) > 5:
+        return ai_title
+
+    # 2) Try to call AI
+    try:
+        from api.config import APIConfig
+        cfg = APIConfig()
+        if cfg.is_configured:
+            summary = _build_title_context(sub_problems, results)
+            title = _call_ai_title(cfg.api_key, summary)
+            if title and len(title) > 3:
+                return title
+    except Exception:
+        pass
+
+    # 3) Smart fallback from data
+    return _smart_title_from_data(sub_problems, results, problem_text)
+
+
+def _build_title_context(sub_problems, results):
+    """构建标题生成的上下文"""
+    lines = []
+    for sp in sub_problems:
+        sp_id = sp.get("id", "?")
+        r = results.get(f"sub_{sp_id}", {})
+        ptype = sp.get("type", "")
+        if r.get("total_distance"):
+            lines.append(f"Q{sp_id}: 路径优化, {r.get('n_locations','?')}地点, "
+                        f"最短距离{r['total_distance']}km")
+        elif r.get("forecast"):
+            lines.append(f"Q{sp_id}: 灰色预测, MAPE={r.get('mape','?')}%")
+        elif r.get("scores"):
+            lines.append(f"Q{sp_id}: 评价排序")
+    return "; ".join(lines) if lines else "数学建模问题求解"
+
+
+def _call_ai_title(api_key, context):
+    """调用AI生成论文标题"""
+    import json, urllib.request
+    body = json.dumps({
+        "model": "deepseek-chat", "temperature": 0.7, "max_tokens": 100,
+        "messages": [{
+            "role": "system",
+            "content": "你是数学建模竞赛论文作者。根据求解内容生成一个学术论文标题。"
+                       "要求：20-35字,突出方法和问题,不夸张不空洞,用中文。"
+                       "只返回标题,不要引号不要解释。"
+        }, {
+            "role": "user",
+            "content": f"求解内容: {context}"
+        }]
+    }).encode()
+    req = urllib.request.Request("https://api.deepseek.com/v1/chat/completions",
+        data=body, headers={"Content-Type": "application/json",
+                           "Authorization": f"Bearer {api_key}"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.loads(r.read())["choices"][0]["message"]["content"].strip()
+    except Exception:
+        return ""
+
+
+def _smart_title_from_data(sub_problems, results, problem_text):
+    """无AI时智能生成标题"""
+    # Extract key info from results
+    has_routing = any(r.get("tour") for r in results.values())
+    has_prediction = any(r.get("forecast") for r in results.values())
+    has_evaluation = any(r.get("scores") for r in results.values())
+
+    # Get problem topic from text
+    topic = ""
     if problem_text:
         first_line = problem_text.strip().split('\n')[0]
-        if len(first_line) > 5 and len(first_line) < 60:
-            return f"基于混合启发式算法的{first_line}"
-    types = list(set(sp.get('type','') for sp in sub_problems))
-    if '优化' in types:
-        return "基于Floyd-Warshall与混合启发式算法的路径优化研究"
-    return "基于多模型融合的数学建模研究"
+        # Clean brackets and special chars
+        import re
+        topic = re.sub(r'[（(][^)）]*[)）]', '', first_line).strip()
+        if len(topic) > 40:
+            topic = topic[:40]
+
+    if has_routing:
+        dist = next(r.get("total_distance","") for r in results.values() if r.get("tour"))
+        n = next(r.get("n_locations","") for r in results.values() if r.get("tour"))
+        return f"基于Floyd-Warshall与混合启发式的{n}地点路径优化研究"
+    elif has_prediction:
+        return f"基于灰色预测GM(1,1)模型的{topic or '时间序列预测研究'}"
+    elif has_evaluation:
+        return f"基于熵权-TOPSIS的{topic or '综合评价研究'}"
+    else:
+        return f"{topic or '数学建模'}问题的建模与求解"
 
 
 def _build_abstract_from_results(sub_problems, results):
