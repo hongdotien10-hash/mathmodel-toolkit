@@ -196,11 +196,15 @@ def generate_paper(output_path, problem_text="", analysis=None, recommendations=
     # ===== 三、模型建立与求解 =====
     _heading(doc, "三、模型建立与求解")
 
-    for sp in sub_problems:
+    for i_sp, sp in enumerate(sub_problems):
         sp_id = sp.get("id", "?")
         ptype = sp.get("type", "")
         sp_result = results.get(f"sub_{sp_id}", {})
         ai_sec = (ai_content or {}).get(f"section_{sp_id}", "")
+
+        # Section number: 3.1, 3.2, 3.3, 3.4
+        sec_num = f"3.{i_sp + 1}"
+        _heading(doc, f"{sec_num} 问题{sp_id}的模型建立与求解", 2)
 
         if ptype == "评价":
             _build_evaluation_section(doc, sp_id, sp_result, fig_dir, fig_num, ai_sec)
@@ -904,7 +908,7 @@ def _routing_section_content(doc, sec, result, fig_dir, fig_num, ai_text):
     n_vehicles = result.get("n_vehicles", 1)
     total_dist = result.get("total_distance") or result.get("metric_value") or "?"
 
-    _heading(doc, f"{sec}.1 问题描述与建模", 3)
+    _heading(doc, "问题描述与建模", 3)
     if n_vehicles > 1:
         _para(doc, f"该问题属于带容量约束的车辆路径问题（CVRP）。"
               f"涉及{n_locations}个地点的物资配送任务，需在车辆载重约束下规划最优路线，"
@@ -915,7 +919,7 @@ def _routing_section_content(doc, sec, result, fig_dir, fig_num, ai_text):
         _para(doc, f"该问题属于旅行商问题（TSP），需找到一条遍历{n_locations}个地点的"
               f"最短闭合回路。TSP是经典的NP-hard问题，精确求解复杂度O(n!)。")
 
-    _heading(doc, f"{sec}.2 求解方法", 3)
+    _heading(doc, "求解方法", 3)
     _para(doc, f"采用{method}进行求解：\n"
           f"(1) Floyd-Warshall算法计算稀疏路网全对最短路径，将不完全连通图转化为完全图；\n"
           f"(2) 多起点最近邻算法（Nearest Neighbor）构建初始回路，从{n_locations}个节点"
@@ -923,7 +927,7 @@ def _routing_section_content(doc, sec, result, fig_dir, fig_num, ai_text):
           f"(3) 2-opt局部搜索算法对初始解迭代优化，通过交换边对消除路径交叉和绕路。"
           + (f"\n(4) 将TSP回路按车辆容量约束分割为{n_vehicles}条配送路线。" if n_vehicles > 1 else ""))
 
-    _heading(doc, f"{sec}.3 求解结果", 3)
+    _heading(doc, "求解结果", 3)
     if n_vehicles > 1:
         _para(doc, f"最终规划出{n_vehicles}条配送路线，总配送距离为{total_dist}km。")
         routes = result.get("routes", [])
@@ -963,11 +967,11 @@ def _knapsack_section_content(doc, sec, result, fig_dir, fig_num, ai_text):
           "目标函数（最大化总收益）：max Z = sum p_i * x_i\n"
           "约束条件：(1)资源约束 sum c_i * x_i <= B；(2)0-1约束 x_i属于{0,1}。")
 
-    _heading(doc, f"{sec}.2 求解方法", 3)
+    _heading(doc, "求解方法", 3)
     _para(doc, "采用贪心算法（性价比排序）获取初始解，"
           "对小规模问题使用分枝定界法精确求解，取两者最优。")
 
-    _heading(doc, f"{sec}.3 求解结果", 3)
+    _heading(doc, "求解结果", 3)
     sel = result.get("selection", [])
     cost = result.get("total_cost", 0)
     budget = result.get("budget", 100)
