@@ -98,10 +98,12 @@ class AISolver:
 - 距离矩阵计算用numpy手写，图算法用numpy手写，不要依赖networkx
 
 ## 代码要求:
-1. 读取数据: 数据文件是.xlsx格式, 用 pd.read_excel() 读取, 不要用read_csv
-   文件路径: problems/sample/附件1.xlsx 或 problems/sample/附件2.xlsx
-   .xlsx文件第一行和第一列是表头/序号, 真实距离数据从(1,1)开始
-2. 数据预处理
+1. 读取数据: 根据文件扩展名选择读取方式
+   - .xlsx/.xls → pd.read_excel()
+   - .csv → pd.read_csv()
+   数据文件中可能包含表头行/序号列, 需要智能识别并跳过
+   查看实际数据内容后再决定如何处理
+2. 数据预处理: 根据数据特征自动选择方法(缺失值/归一化/特征工程)
 3. 建立并求解模型
 4. 输出具体数值结果(print出来)
 5. 生成论文级图表(保存到指定路径, 用matplotlib, 300dpi)

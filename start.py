@@ -183,20 +183,29 @@ def main():
             print(f"\n  {'='*40}")
             print(f"  Q{sp_id}: Deep Multi-Round Analysis + Solve")
             print(f"  {'='*40}")
-            # Q1 uses first data file, Q2+ use second data file
-            file_idx = 0 if sp_id <= 1 else 1
-            df = _find_df(data_files, ptype, prefer_index=file_idx)
+            df = _find_df(data_files, ptype)
             if df is not None:
-                from mathmodel.pipeline.deep_solve import deep_solve_tsp
                 numeric = df.select_dtypes(include=np.number)
-                first_col = numeric.iloc[:, 0].dropna().tolist()
-                if len(first_col) >= 3 and first_col[:3] == [1.0, 2.0, 3.0]:
-                    sparse = numeric.iloc[:, 1:].values.astype(float)
-                else:
-                    sparse = numeric.values.astype(float)
-                n = sparse.shape[0]
+                # Detect sparse matrix format (many NaN = distance/adjacency matrix)
+                nan_ratio = numeric.isnull().sum().sum() / max(numeric.size, 1)
+                is_sparse = (nan_ratio > 0.15 and numeric.shape[1] >= numeric.shape[0] - 2)
 
-                # Phase A: Deep solver (5+ min computation)
+                if is_sparse:
+                    from mathmodel.pipeline.deep_solve import deep_solve_tsp
+                    first_col = numeric.iloc[:, 0].dropna().tolist()
+                    if len(first_col) >= 3 and first_col[:3] == [1.0, 2.0, 3.0]:
+                        sparse = numeric.iloc[:, 1:].values.astype(float)
+                    else:
+                        sparse = numeric.values.astype(float)
+                    n = sparse.shape[0]
+                    deep_result = deep_solve_tsp(sparse, n, fig_dir, sp_id, time_budget=600)
+                    dist = deep_result["best"]["distance"]
+                else:
+                    # Generic: let AI handle it
+                    n = numeric.shape[0]
+                    deep_result = {"best": {"distance": 0, "tour": [], "method": "AI"},
+                                   "all_ranked": []}
+                    dist = 0
                 print(f"  [Phase A] Deep TSP solving ({n} locations, 10min budget)...")
                 deep_result = deep_solve_tsp(sparse, n, fig_dir, sp_id, time_budget=600)
                 dist = deep_result["best"]["distance"]
@@ -236,17 +245,9 @@ def main():
 
                         # 2. AI generates figure code (6 figures × 2 attempts = 12 calls)
                         fig_paths = []
-                        fig_purposes = [
-                            f"最优配送路线图 — {n}个地点 总距离{dist}km 标出访问顺序和每段距离 中文标注",
-                            f"Floyd-Warshall路网连通图 — 原始48条边 vs 计算后182条最短路径对比 中文",
-                            f"多算法对比柱状图 — NN/2-opt/SA/GreedyInsert四种算法距离对比 中文标注",
-                            f"模拟退火收敛曲线 — 5轮迭代过程 展示收敛到最优解 中文",
-                            f"距离矩阵热力图 — {n}x{n}矩阵 展示路网稀疏性 中文标注",
-                            f"配送时间分析图 — 各路段距离vs累计时间 中文",
-                            f"算法运行时间对比图 — 不同算法的耗时对比 中文",
-                            f"最优路径节点访问顺序图 — 展示每个节点的访问序号 中文",
-                        ]
-                        for fig_purpose in fig_purposes[:8]:  # 8 figures per question
+                        # AI designs figures based on problem type (not hardcoded)
+                        fig_purposes = _get_figure_purposes(sp, result_data, n, dist)
+                        for fig_purpose in fig_purposes[:8]:
                             for retry in range(3):
                                 fig_path = ai.generate_figure_code(
                                     sp_id, result_data, fig_dir, purpose=fig_purpose)
@@ -1009,6 +1010,45 @@ def _make_routing_figure(val, key, fig_dir):
     fig.savefig(str(path), dpi=300, bbox_inches='tight', facecolor='white')
     plt.close(fig)
     print(f"  [{key}] Route figure: {total_dist}km")
+
+
+def _get_figure_purposes(sp, result_data, n, dist):
+    """根据题型和数据生成合适的图表方案（通用，不写死）"""
+    ptype = sp.get("type", "")
+    purposes = []
+
+    # 核心结果图（任何题型都需要）
+    if result_data.get("total_distance") or result_data.get("tour"):
+        purposes.extend([
+            f"最优结果展示图 — 基于{sp.get('title','')[:30]}的求解结果 中文标注 专业配色",
+            f"多算法对比图 — 对比不同求解方法的性能差异 中文标注",
+        ])
+    if result_data.get("all_methods"):
+        purposes.append(f"算法收敛性分析图 — 展示求解过程的收敛情况 中文")
+
+    # 数据理解图
+    purposes.extend([
+        f"数据特征分析图 — 展示输入数据的结构和分布特征 中文标注",
+        f"结果综合对比图 — 将关键指标可视化呈现 中文",
+    ])
+
+    # 题型特定图
+    if ptype == "优化":
+        purposes.append(f"优化结果可视化 — 展示最优解的结构和组成 中文标注")
+    elif ptype == "预测":
+        purposes.extend([
+            f"预测结果图 — 拟合值vs实际值+未来预测 中文标注",
+            f"残差分析图 — 模型误差诊断 中文",
+        ])
+    elif ptype == "评价":
+        purposes.extend([
+            f"综合评价得分图 — 各方案得分排序 中文标注",
+            f"指标权重分布图 — 展示各指标的相对重要性 中文",
+        ])
+
+    # 通用补充
+    purposes.append(f"求解过程总结图 — 综合展示问题{sp.get('id','?')}的求解全貌 中文")
+    return purposes
 
 
 def _find_df(data_files, ptype, prefer_index=0):
