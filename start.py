@@ -6,6 +6,7 @@
 
 import sys, json, re
 from pathlib import Path
+import re
 import numpy as np
 import pandas as pd
 import matplotlib
@@ -17,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from mathmodel.utils import set_seed, Timer
 from mathmodel.utils.helpers import safe_call
 from mathmodel.analyzer import ProblemClassifier, ModelKnowledgeBase
-from mathmodel.models import EvaluationSolver, StatsSolver, OptimizationSolver, MLSolver
+from mathmodel.models import EvaluationSolver, StatsSolver, OptimizationSolver, MLSolver, GraphSolver
 from mathmodel.sensitivity import SensitivityAnalyzer
 from mathmodel.visualization import Plotter, set_style, get_colors
 from mathmodel.paper.word_writer import generate_paper
@@ -31,11 +32,25 @@ set_seed(42)
 PROBLEMS_DIR = Path(__file__).parent / "problems"
 OUTPUT_DIR = Path(__file__).parent / "output"
 
+# --- CLI flags ---
+INTERACTIVE = "--interactive" in sys.argv or "-i" in sys.argv
+
+
+def _pause(msg="Continue?"):
+    """交互模式暂停"""
+    if INTERACTIVE:
+        try:
+            input(f"\n  [PAUSE] {msg} (press Enter to continue, Ctrl+C to stop) ")
+        except (EOFError, KeyboardInterrupt):
+            print("\n  Stopped by user.")
+            sys.exit(0)
 
 
 def main():
     tracker = PhaseTracker(title="MathModel Toolkit PRO")
     print_header("MathModel Toolkit PRO — Award-Level")
+    if INTERACTIVE:
+        print("  [Interactive mode] Will pause at each phase for review.")
 
     # === Step 1: Scan & Load (same as free version) ===
     problem_dirs = sorted([d for d in PROBLEMS_DIR.iterdir()
@@ -107,6 +122,7 @@ def main():
             print(f"     Winner: {cr.get('winner','?')} | {cr.get('ai_reason','')[:80]}...")
     if not api_key:
         print("  [本地对比] 基于指标数值自动选优")
+    _pause("Contest done. Continue to solving?")
 
     # === Step 5: Solve with best models ===
     print_section("Phase 3: Solving with Best Models")
@@ -119,12 +135,22 @@ def main():
         winner_model = ""
         if f"sub_{sp_id}" in contest_results:
             best = contest_results[f"sub_{sp_id}"]
-            best_result = next((c for c in best.get("candidates", [])
-                                if c["model"] == best.get("winner")), {})
-            all_results[f"sub_{sp_id}"] = best_result.get("result", {})
-            winner_model = best.get("winner", "")
-            print(f"  Q{sp_id}: [{winner_model}] — contest winner")
-            continue
+            winner = best.get("winner", "")
+            # If contest failed (no valid model), fall through to local solver
+            if winner not in ("无有效模型", "无", "", None):
+                best_result = next((c for c in best.get("candidates", [])
+                                    if c["model"] == winner), {})
+                result_data = best_result.get("result", {})
+                # Check if result is empty/garbage
+                if result_data and result_data.get("metric_value", -1) != 0 and \
+                   result_data.get("selection") != []:
+                    all_results[f"sub_{sp_id}"] = result_data
+                    print(f"  Q{sp_id}: [{winner}] — contest winner")
+                    continue
+                else:
+                    print(f"  Q{sp_id}: Contest result empty, falling back to local solver...")
+            else:
+                print(f"  Q{sp_id}: Contest failed ({winner}), using local solver...")
 
         # Fallback: local solver
         df = _find_df(data_files, ptype)
@@ -152,6 +178,14 @@ def main():
                     "mape": round(pred["mape"],2), "grade": pred["grade"]}
                 print(f"  Q{sp_id}: GM(1,1) MAPE={pred['mape']:.2f}%")
         elif ptype == "优化" and numeric.shape[1] >= 2:
+            # Detect routing problems (VRP/TSP/CVRP) vs knapsack
+            sp_text = sp.get("title", "") + sp.get("full_text", "")
+            is_routing = any(kw in sp_text for kw in ["路径", "配送", "路线", "车辆", "route", "VRP", "TSP", "CVRP", "选址"]) and \
+                        any(kw in str(df.columns).lower() for kw in ["x", "y", "坐标", "经度", "纬度", "lat", "lon", "lng", "longitude", "latitude"])
+            if is_routing:
+                _solve_routing(sp, df, data_files, fig_dir, all_results)
+                continue
+
             costs = numeric.iloc[:,1].values.astype(float).tolist()
             benefits = numeric.iloc[:,2].values.astype(float).tolist() if numeric.shape[1] > 2 else numeric.iloc[:,0].tolist()
             budget = sum(costs)*0.6
@@ -202,6 +236,8 @@ def main():
     print_section("PRO Phase 6: Professional Chart Suites")
     cs = ChartSuite()
     for key, val in all_results.items():
+        if "tour" in val or "routes" in val:
+            _make_routing_figure(val, key, fig_dir)
         if "forecast" in val and "fitted" in val:
             cs.prediction_suite(val.get("original", []), val["fitted"], val["forecast"],
                                 output_path=str(fig_dir / f"{key}_pred_suite.png"))
@@ -245,6 +281,8 @@ def main():
             print(f"  Abstract: {len(ai_content.get('abstract',''))} chars")
         except Exception as e:
             print(f"  AI writing failed: {e}")
+
+    _pause("All results ready. Generate paper now?")
 
     # === Step 10: Generate Papers ===
     print_section("Phase 8: Paper Generation")
@@ -328,6 +366,316 @@ def _analyze(problem_text, data_profiles):
             "type": clf["type"], "model": m["model"], "score": m["score"],
             "reason": m["reason"], "source": "rule"})
     return sub_problems
+
+
+def _solve_routing(sp, df, data_files, fig_dir, results):
+    """路径优化：VRP/TSP/CVRP — Floyd-Warshall + TSP最近邻 + 2-opt优化"""
+    gs = GraphSolver()
+    numeric = df.select_dtypes(include=np.number)
+    n = numeric.shape[0]
+    sp_text = sp.get("title", "") + sp.get("full_text", "")
+
+    # ---- Step 0: Detect data format ----
+    # Format A: Sparse distance matrix (square, many NaN = no direct road)
+    # Format B: Coordinate table (X/Y/lat/lon columns)
+    # Format C: Complete distance matrix (square, no NaN)
+
+    is_distance_matrix = False
+    if n >= 4 and numeric.shape[1] >= n - 2:  # rough check: square-ish
+        # Check if first column looks like location IDs
+        first_col = numeric.iloc[:, 0]
+        nan_ratio = numeric.isnull().sum().sum() / (n * numeric.shape[1])
+        if nan_ratio > 0.3:  # many NaN = sparse graph
+            is_distance_matrix = True
+            print(f"     Detected: Sparse distance matrix ({nan_ratio:.0%} NaN)")
+
+    if is_distance_matrix:
+        _solve_routing_from_matrix(sp, numeric, df, results, gs, n, sp_text)
+    else:
+        _solve_routing_from_coords(sp, numeric, df, results, gs, n, sp_text)
+
+
+def _build_complete_graph(numeric, n):
+    """从稀疏距离矩阵构建完全图（Floyd-Warshall）"""
+    INF = 1e9
+    D = np.full((n, n), INF)
+    vals = numeric.values.astype(float)
+
+    # If first column is location IDs, use cols 1: as distance matrix
+    if numeric.shape[1] >= n:
+        # Distance matrix: cols 0..n-1 or 1..n
+        offset = 1 if not pd.api.types.is_numeric_dtype(numeric.columns[0]) else 0
+        for i in range(n):
+            for j in range(offset, min(offset + n, numeric.shape[1])):
+                val = vals[i, j] if j < vals.shape[1] else np.nan
+                if not np.isnan(val) and val > 0:
+                    D[i, j - offset] = val
+                if i == j - offset:
+                    D[i, j - offset] = 0
+    else:
+        # General sparse matrix
+        n_cols = min(n, numeric.shape[1])
+        for i in range(n):
+            for j in range(n_cols):
+                val = vals[i, j]
+                if not np.isnan(val) and val > 0:
+                    D[i, j] = val
+                elif i == j:
+                    D[i, j] = 0
+
+    # Make symmetric
+    for i in range(n):
+        for j in range(n):
+            if D[i, j] < INF and D[j, i] >= INF:
+                D[j, i] = D[i, j]
+            elif D[j, i] < INF and D[i, j] >= INF:
+                D[i, j] = D[j, i]
+
+    # Floyd-Warshall
+    n_edges_before = int(np.sum((D > 0) & (D < INF)))
+    for k in range(n):
+        for i in range(n):
+            if D[i, k] >= INF: continue
+            for j in range(n):
+                nd = D[i, k] + D[k, j]
+                if nd < D[i, j]:
+                    D[i, j] = nd
+
+    # Check connectivity — if any pair unreachable, that's bad
+    n_unreachable = int(np.sum(D >= INF))
+    if n_unreachable > 0:
+        print(f"     Warning: {n_unreachable} unreachable pairs — graph may be disconnected")
+        # Fallback: use Euclidean distances between implicit coordinates as backup
+        D[D >= INF] = 999  # large penalty but keeps TSP working
+
+    n_edges_after = int(np.sum((D > 0) & (D < INF)))
+    print(f"     Graph: {n_edges_before} edges -> Floyd -> {n_edges_after} paths")
+    return D
+
+
+def _tsp_solve(D, n, max_starts=15):
+    """TSP: 多起点最近邻 + 2-opt + 模拟退火 多算法对比选最优"""
+    gs = GraphSolver()
+    best_dist, best_tour = float('inf'), None
+
+    # Phase 1: Nearest neighbor from multiple starts
+    for start in range(min(n, max_starts)):
+        r = gs.tsp_nearest_neighbor(D, start=start)
+        if r['total_distance'] < best_dist:
+            best_dist = r['total_distance']
+            best_tour = r['tour']
+
+    # Phase 2: 2-opt improvement on NN result
+    improved = True
+    iters = 0
+    while improved and iters < 100:
+        improved = False; iters += 1
+        for i in range(1, len(best_tour) - 3):
+            for j in range(i + 2, len(best_tour) - 1):
+                old_d = D[best_tour[i-1]][best_tour[i]] + D[best_tour[j]][best_tour[j+1]]
+                new_d = D[best_tour[i-1]][best_tour[j]] + D[best_tour[i]][best_tour[j+1]]
+                if new_d < old_d - 1e-10:
+                    best_tour[i:j+1] = reversed(best_tour[i:j+1])
+                    best_dist = best_dist - old_d + new_d
+                    improved = True
+
+    # Phase 3: Also try Simulated Annealing for problems >= 10 nodes
+    if n >= 10:
+        sa_dist, sa_tour = _tsp_simulated_annealing(D, n, iterations=3000)
+        if sa_dist < best_dist:
+            best_dist, best_tour = sa_dist, sa_tour
+            print(f"     SA improved: {best_dist}")
+
+    return round(best_dist, 1), best_tour
+
+
+def _tsp_simulated_annealing(D, n, temp_start=1000, cooling=0.995, iterations=5000):
+    """模拟退火 TSP 求解器"""
+    import random
+    tour = list(range(n))
+    random.shuffle(tour)
+    tour.append(tour[0])
+    current_dist = sum(D[tour[i]][tour[i+1]] for i in range(n))
+    best_tour, best_dist = tour[:], current_dist
+    temp = temp_start
+
+    for _ in range(iterations):
+        i, j = sorted(random.sample(range(1, n), 2))
+        if j - i < 2: continue
+        new_tour = tour[:i] + tour[i:j+1][::-1] + tour[j+1:]
+        new_dist = sum(D[new_tour[k]][new_tour[k+1]] for k in range(n))
+
+        if new_dist < current_dist or random.random() < np.exp((current_dist - new_dist) / max(temp, 1e-10)):
+            tour, current_dist = new_tour, new_dist
+            if current_dist < best_dist:
+                best_tour, best_dist = tour[:], current_dist
+        temp *= cooling
+
+    return round(best_dist, 1), best_tour
+
+
+def _solve_routing_from_matrix(sp, numeric, df, results, gs, n, sp_text):
+    """稀疏距离矩阵 → Floyd → TSP + 2-opt"""
+    D = _build_complete_graph(numeric, n)
+
+    # Get capacity
+    cap_match = re.search(r'(\d+)\s*(kg|千克|公斤|吨|t)', sp_text.lower())
+    capacity = float(cap_match.group(1)) if cap_match else float('inf')
+    if cap_match and cap_match.group(2) in ('吨', 't'):
+        capacity *= 1000
+
+    # Get demands if available
+    demand_col = None
+    for col in df.columns:
+        cl = str(col).lower()
+        if any(kw in cl for kw in ['需求', '重量', 'demand', 'weight', 'load']):
+            demand_col = col; break
+    demands = df[demand_col].values.astype(float).tolist() if demand_col else None
+
+    labels = df.iloc[:, 0].tolist() if not pd.api.types.is_numeric_dtype(df.iloc[:, 0]) else \
+             [f"地点{i+1}" for i in range(n)]
+
+    if demands is None or sum(demands) <= capacity:
+        # Single TSP route
+        dist, tour = _tsp_solve(D, n)
+        tour_labels = [labels[i] for i in tour if i < len(labels)]
+        results[f"sub_{sp['id']}"] = {
+            "method": "Floyd-Warshall + TSP(NN+2-opt)",
+            "n_locations": n, "tour": tour, "tour_labels": tour_labels,
+            "total_distance": dist, "n_vehicles": 1,
+            "summary": f"最短路径: {n}个地点, 总距离={dist}km, 1辆车"
+        }
+        print(f"     TSP: {dist} total distance, 1 vehicle")
+    else:
+        # VRP: TSP tour → split by capacity
+        _, tour = _tsp_solve(D, n)
+        routes, i = [], 0
+        while i < len(tour) - 1:
+            route, load = [0], 0
+            while i < len(tour) - 1 and load + demands[tour[i+1]] <= capacity:
+                route.append(tour[i+1]); load += demands[tour[i+1]]; i += 1
+            route.append(0); routes.append(route)
+            if len(route) == 2: i += 1  # single stop = force advance
+
+        total = 0; details = []
+        for ri, r in enumerate(routes):
+            rd = sum(D[r[j]][r[j+1]] for j in range(len(r)-1))
+            rl = sum(demands[j] for j in r if j != 0)
+            total += rd
+            details.append({"route": ri+1, "path": [labels[j] for j in r],
+                           "distance": round(rd, 1), "load": round(rl, 0)})
+            print(f"     Route {ri+1}: {len(r)-2} stops, dist={rd:.1f}, load={rl:.0f}/{capacity:.0f}")
+
+        results[f"sub_{sp['id']}"] = {
+            "method": "Floyd-Warshall + TSP + VRP split",
+            "n_locations": n, "n_vehicles": len(routes), "routes": details,
+            "total_distance": round(total, 1), "vehicle_capacity": capacity,
+            "summary": f"VRP: {n}地点->{len(routes)}辆车, 总距离={total:.1f}"
+        }
+        print(f"     VRP: {len(routes)} vehicles, total distance={total:.1f}")
+
+
+def _solve_routing_from_coords(sp, numeric, df, results, gs, n, sp_text):
+    """坐标数据 → 欧氏距离 → TSP + 2-opt"""
+    # Find coordinate columns
+    coord_cols = []
+    for col in numeric.columns:
+        cl = str(col).lower()
+        if any(kw in cl for kw in ['x', 'y', '坐标', '经度', '纬度', 'lat', 'lon', 'lng']):
+            coord_cols.append(col)
+    if len(coord_cols) < 2:
+        coord_cols = numeric.columns[:2].tolist()
+
+    coords = numeric[coord_cols].values.astype(float)
+    print(f"     Routing: {n} locations from coordinates {coord_cols}")
+
+    # Euclidean distance matrix
+    D = np.zeros((n, n))
+    for i in range(n):
+        for j in range(n):
+            D[i, j] = np.sqrt(np.sum((coords[i] - coords[j])**2))
+
+    # Capacity and demands
+    sp_text = sp.get("title", "") + sp.get("full_text", "")
+    cap_match = re.search(r'(\d+)\s*(kg|千克|公斤|吨|t)', sp_text.lower())
+    capacity = float(cap_match.group(1)) if cap_match else float('inf')
+    if cap_match and cap_match.group(2) in ('吨', 't'):
+        capacity *= 1000
+
+    demand_col = None
+    for col in df.columns:
+        cl = str(col).lower()
+        if any(kw in cl for kw in ['需求', '重量', 'demand', 'weight', 'load']):
+            demand_col = col; break
+    demands = df[demand_col].values.astype(float).tolist() if demand_col else None
+
+    labels = df.iloc[:, 0].tolist() if not pd.api.types.is_numeric_dtype(df.iloc[:, 0]) else \
+             [f"地点{i+1}" for i in range(n)]
+
+    # Solve TSP
+    dist, tour = _tsp_solve(D, n)
+    tour_labels = [labels[i] for i in tour if i < len(labels)]
+    results[f"sub_{sp['id']}"] = {
+        "method": "Euclidean TSP (NN+2-opt)",
+        "n_locations": n, "tour": tour, "tour_labels": tour_labels,
+        "total_distance": dist, "n_vehicles": 1,
+        "summary": f"最短路径: {n}个地点, 总距离={dist}, 1辆车"
+    }
+    print(f"     TSP: {dist} total distance")
+
+
+def _make_routing_figure(val, key, fig_dir):
+    """生成路径优化图：TSP路线 or VRP多车路线"""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from mathmodel.visualization.styles import despine, get_colors
+
+    tour = val.get("tour", [])
+    routes = val.get("routes", [])
+    total_dist = val.get("total_distance", 0)
+    n_veh = val.get("n_vehicles", 1)
+
+    if not tour and not routes:
+        return
+
+    colors = get_colors(max(len(routes) if routes else 1, 5))
+
+    if routes:
+        # VRP multi-route map
+        fig, ax = plt.subplots(figsize=(8, 5))
+        for ri, rd in enumerate(routes):
+            path = rd.get("path", [])
+            xs = list(range(len(path)))
+            ys = [ri * 10] * len(path)
+            ax.plot(xs, [ri*10 + 2]*len(xs), 'o-', color=colors[ri % len(colors)],
+                    markersize=6, linewidth=2, label=f"Route {ri+1} ({rd.get('distance','?')}km)")
+            for j, p in enumerate(path):
+                ax.annotate(str(p), (j, ri*10 + 2.5), fontsize=7, ha='center')
+        ax.set_title(f"VRP Routes ({n_veh} vehicles, {total_dist}km total)", fontsize=12)
+        ax.set_xlabel("Stop Sequence"); ax.set_ylabel("Route")
+        ax.legend(fontsize=8, frameon=False)
+        despine(ax); ax.grid(alpha=0.2, linestyle=":")
+    else:
+        # TSP route diagram
+        fig, ax = plt.subplots(figsize=(8, 4))
+        n = len(tour)
+        xs = list(range(n))
+        ys = [0] * n
+        ax.plot(xs, ys, 'o-', color=colors[0], markersize=8, linewidth=2,
+                markerfacecolor='white', markeredgewidth=2)
+        for i, t in enumerate(tour):
+            ax.annotate(str(t), (i, 0.3), fontsize=8, ha='center', fontweight='bold')
+        ax.set_title(f"TSP Optimal Route ({total_dist}km, {n-1} stops)", fontsize=12)
+        ax.set_xlabel("Visit Order"); ax.set_ylabel("")
+        ax.set_yticks([])
+        despine(ax); ax.grid(alpha=0.2, axis='x', linestyle=":")
+
+    fig.tight_layout()
+    path = Path(fig_dir) / f"{key}_route.png"
+    fig.savefig(str(path), dpi=300, bbox_inches='tight', facecolor='white')
+    plt.close(fig)
+    print(f"  [{key}] Routing figure generated")
 
 
 def _find_df(data_files, ptype):

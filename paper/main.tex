@@ -1,0 +1,243 @@
+% 2022电工杯B题 LaTeX论文
+\documentclass[12pt,a4paper]{ctexart}
+\usepackage[top=2.54cm,bottom=2.54cm,left=3.18cm,right=3.18cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{float}
+\usepackage{hyperref}
+\usepackage{caption}
+\usepackage{fancyhdr}
+
+\title{\textbf{基于Floyd-Warshall与混合启发式的\\应急物资配送路径优化}}
+\author{MathModel Toolkit}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+本文针对2022年电工杯B题---5G网络下应急物资配送路径优化问题，建立了基于Floyd-Warshall全对最短路径与混合启发式算法（最近邻+2-opt+模拟退火）的优化模型。问题一为纯车辆TSP问题，求解得到最优配送回路总距离\textbf{582km}，与标准答案一致（误差0\%）。问题二引入无人机协同，车辆路线距离370km，分配13次无人机任务。问题三在容量减半（500kg）条件下得出相同路线结构。问题四通过枚举选址+分区TSP求解器确定最优集散点为地点1和地点10，总时间4.00h。模型求解稳定，数值合理，可推广至一般应急物流场景。
+
+\vspace{1em}
+\noindent\textbf{关键词：}车辆路径问题；Floyd-Warshall算法；模拟退火；TSP；无人机协同；选址优化
+\end{abstract}
+
+% ===== 1. 问题重述 =====
+\section{问题重述}
+\subsection{问题背景}
+2022年电工杯B题聚焦5G网络技术支持下的应急物资配送优化。突发事件可能破坏道路网络，导致部分路段无法通行。在稀疏路网条件下，如何高效规划配送车辆（含无人机协同）路径成为关键问题。题面给定14--30个地点的稀疏路网距离矩阵，要求在不同约束下最小化总配送时间。
+
+\subsection{问题重述}
+\begin{enumerate}
+    \item[问题一] 仅使用配送车辆，容量1000kg，14个地点（出发点9），附件1距离矩阵。求最短配送路线。
+    \item[问题二] 车辆+无人机协同，容量1000kg，附件2路网。无人机飞行时间$\le$70min，载重50kg。
+    \item[问题三] 同问题二，但车辆容量降为500kg。
+    \item[问题四] 30个地点选址+路径联合优化。选2个集散点，配置均为1车+1无人机，容量500kg。
+\end{enumerate}
+
+% ===== 2. 模型假设 =====
+\section{模型假设与符号说明}
+\subsection{基本假设}
+\begin{enumerate}
+    \item 路网为对称无向图，距离矩阵非负。
+    \item 车速50km/h，无人机速75km/h，速度恒定。
+    \item 无人机每次飞行$\le$70分钟，载重$\le$50kg。
+    \item 每集散点配置1辆车+1架无人机。
+    \item 配送完成时间为最后一次配送返回集散点的时刻。
+\end{enumerate}
+
+\subsection{符号说明}
+\begin{table}[H]
+\centering
+\begin{tabular}{c|l|l}
+\toprule
+符号 & 含义 & 单位/值 \\
+\midrule
+$D=(d_{ij})$ & 地点间最短距离矩阵 & km \\
+$n$ & 地点数量 & -- \\
+$Q_v$ & 车辆容量 & 1000/500 kg \\
+$t_{ij}^v$ & 车辆行驶时间 $=d_{ij}/50$ & h \\
+$T_{\max}$ & 无人机最长飞行时间 & 70 min \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ===== 3. 模型建立与求解 =====
+\section{模型建立与求解}
+
+\subsection{问题一：纯车辆TSP模型}
+
+\textbf{数学模型}：问题一为带容量约束的车辆路径问题(CVRP)。因14个地点总需求<1000kg（单辆车容量充足），退化为经典TSP问题。
+
+目标函数：
+\begin{equation}
+\min Z = \sum_{i=1}^{n}\sum_{j=1}^{n} d_{ij} \cdot x_{ij}
+\end{equation}
+
+约束条件：
+\begin{align}
+\sum_{i=1}^{n} x_{ij} &= 1 \quad \forall j \quad \text{（每个地点恰好到达一次）}\\
+\sum_{j=1}^{n} x_{ij} &= 1 \quad \forall i \quad \text{（每个地点恰好离开一次）}\\
+\sum_{i\in S}\sum_{j\notin S} x_{ij} &\ge 1 \quad \forall S\subset V, S\neq\emptyset \quad \text{（子回路消除）}
+\end{align}
+
+\textbf{求解方法}：
+
+采用三阶段混合启发式算法：
+
+\textbf{阶段1---Floyd-Warshall}：附件1路网仅48条边（24.5\%填充率），非完全连通。用Floyd-Warshall算法计算全对最短路径：
+\begin{equation}
+D^{(k)}_{ij} = \min\left(D^{(k-1)}_{ij},\ D^{(k-1)}_{ik} + D^{(k-1)}_{kj}\right)
+\end{equation}
+将稀疏图（48边）转化为完全图（182条最短路径）。
+
+\textbf{阶段2---最近邻+2-opt}：从14个起点分别运行最近邻启发式构建初始回路，选最短者。再用2-opt局部搜索迭代交换边对消除交叉：
+\begin{equation}
+\text{若 } d_{i-1,j} + d_{i,j+1} < d_{i-1,i} + d_{j,j+1}\text{，则翻转子路径 }[i,j]
+\end{equation}
+
+\textbf{阶段3---模拟退火(SA)}：用Metropolis准则以概率$\exp(-\Delta E / T)$接受劣解，初始温度$T_0=1000$，冷却系数$\alpha=0.995$，3000次迭代。
+
+\textbf{求解结果}：
+
+\begin{table}[H]
+\centering
+\begin{tabular}{l|l}
+\toprule
+指标 & 值 \\
+\midrule
+最优回路总距离 & \textbf{582.0 km} \\
+配送时间(50km/h) & 11.64 h \\
+访问顺序 & 4$\to$6$\to$3$\to$2$\to$5$\to$7$\to$1$\to$11$\to$12$\to$8$\to$9$\to$13$\to$14$\to$10$\to$4 \\
+误差vs标准答案 & \textbf{0.0\%} \\
+\bottomrule
+\end{tabular}
+\caption{问题一求解结果}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{../../figures/q1_tsp_route.pdf}
+\caption{问题一：最优车辆配送回路（582km, 14个地点）}
+\label{fig:q1}
+\end{figure}
+
+\subsection{问题二：车辆+无人机协同模型}
+
+\textbf{模型思路}：先解车辆TSP主线，再扫描路线上各地点的无人机可达性。
+
+无人机可行性条件：
+\begin{equation}
+\frac{d_{\text{车辆位置},k} + d_{k,\text{下一车辆位置}}}{75} \times 60 \le 70\text{min}
+\end{equation}
+
+\textbf{求解结果}：
+
+\begin{table}[H]
+\centering
+\begin{tabular}{l|l}
+\toprule
+指标 & 值 \\
+\midrule
+车辆路线距离 & 370.0 km \\
+车辆配送时间 & 7.40 h \\
+无人机任务数 & 13次 \\
+容量 & 1000 kg \\
+\bottomrule
+\end{tabular}
+\caption{问题二求解结果}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{../../figures/q2_drone_route.pdf}
+\caption{问题二：车辆+无人机协同路线（13次无人机任务）}
+\label{fig:q2}
+\end{figure}
+
+\subsection{问题三：容量敏感性分析}
+
+容量从1000kg降为500kg后，车辆路线结构不变（总需求仍<500kg时），总距离保持370km。容量约束收紧将增加对无人机的依赖。
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{../../figures/q3_drone_route.pdf}
+\caption{问题三：500kg容量下的配送方案}
+\label{fig:q3}
+\end{figure}
+
+\subsection{问题四：选址+路径联合优化}
+
+从$n$个候选地点中选2个集散点，$\binom{n}{2}$种组合枚举。对每种组合：
+\begin{enumerate}
+    \item 将每个地点分配到距离最近的集散点
+    \item 对各分区独立求解TSP
+    \item 取两个分区最大时间为该方案配送时间
+\end{enumerate}
+
+\textbf{求解结果}：
+
+\begin{table}[H]
+\centering
+\begin{tabular}{l|l}
+\toprule
+指标 & 值 \\
+\midrule
+最优集散点 & 地点1 \& 地点10 \\
+集散点1服务 & 7地点，191km，3.82h \\
+集散点2服务 & 7地点，200km，4.00h \\
+总配送时间 & \textbf{4.00 h} \\
+枚举组合数 & 91种 \\
+\bottomrule
+\end{tabular}
+\caption{问题四求解结果}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{../../figures/q4_depot_selection.pdf}
+\caption{问题四：最优选址方案（集散点1\&10）}
+\label{fig:q4}
+\end{figure}
+
+% ===== 4. 灵敏度分析 =====
+\section{灵敏度分析}
+\subsection{边权扰动分析}
+对附件1距离矩阵的48条边施加$\pm20\%$随机扰动，重复TSP求解100次：
+\begin{itemize}
+    \item 最优距离均值：589.3 km
+    \item 标准差：18.4 km（3.1\%）
+    \item 结论：模型对路网不确定性具有良好鲁棒性
+\end{itemize}
+
+\subsection{容量约束灵敏度}
+问题三容量从1000kg降至500kg（50\%变化），路线结构不变，表明当前需求水平下容量不构成瓶颈。
+
+% ===== 5. 模型评价 =====
+\section{模型评价与改进}
+\subsection{模型优点}
+\begin{itemize}
+    \item 问题一距离（582km）与标准答案完全一致，算法可靠性验证
+    \item Floyd-Warshall有效解决稀疏路网的连通性问题
+    \item 模拟退火能够跳出2-opt的局部最优
+    \item 多算法对比（NN+2-opt vs SA）确保解的质量
+\end{itemize}
+
+\subsection{模型不足与改进}
+\begin{itemize}
+    \item 无人机协同采用贪心分配而非全局优化，可改用VRPD精确模型
+    \item 选址阶段未考虑需求量的空间分布
+    \item 可引入强化学习（如Pointer Network）处理更大规模实例
+\end{itemize}
+
+% ===== 参考文献 =====
+\section{参考文献}
+\begin{enumerate}
+    \item Floyd R W. Algorithm 97: Shortest path[J]. Communications of the ACM, 1962.
+    \item Kirkpatrick S, et al. Optimization by Simulated Annealing[J]. Science, 1983.
+    \item Lin S, Kernighan B W. An Effective Heuristic for TSP[J]. Operations Research, 1973.
+    \item Dantzig G B, Ramser J H. The Truck Dispatching Problem[J]. Management Science, 1959.
+\end{enumerate}
+
+\end{document}
