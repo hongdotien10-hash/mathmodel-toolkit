@@ -63,98 +63,75 @@ def main():
         cfg = APIConfig(); api_key = cfg.api_key if cfg.is_configured else ""
     except: pass
 
-    # === Phase 1: Dedicated solvers (deterministic, fast, correct) ===
-    print_section("Phase 1: Deterministic Solving")
-    from mathmodel.pipeline.dedicated_solvers import solve_routing, solve_knapsack, solve_topsis, solve_grey_forecast, solve_kmeans
+    # === Phase 1: AI reads problem → understands each question → picks data+method ===
+    print_section("Phase 1: AI Understanding + Solving")
+    from mathmodel.pipeline.dedicated_solvers import solve_routing, solve_knapsack, solve_topsis, solve_grey_forecast
 
     all_results = {}
-    sub_count = min(max_questions, 4)  # AI will determine actual count later
+    sub_count = min(max_questions, 4)
 
-    # AI-driven solver selection: let AI analyze data and pick the right solver
-    for q in range(1, sub_count + 1):
-        print(f"\n  Q{q}: AI selecting best solver for this data...")
-        df = None
-        for k, v in data_files.items():
-            if not k.endswith("_norm") and v.select_dtypes(include=np.number).shape[1] >= 2:
-                df = v; break
-        if df is None:
-            all_results[f"sub_{q}"] = {"summary": "No numeric data found"}
-            continue
+    if api_key:
+        # AI reads the problem and figures out what each question needs
+        from mathmodel.pipeline.universal_solver import UniversalSolver
+        us = UniversalSolver(api_key=api_key)
 
-        numeric = df.select_dtypes(include=np.number)
-        nan_ratio = numeric.isnull().sum().sum() / max(numeric.size, 1)
-        n_rows, n_cols = numeric.shape
+        for q in range(1, sub_count + 1):
+            print(f"\n  Q{q}: AI analyzing problem + matching data...")
 
-        # Build data profile for AI decision
-        data_profile = f"Rows={n_rows}, Cols={n_cols}, NaN={nan_ratio:.1%}, "
-        data_profile += f"Columns={list(numeric.columns)[:8]}, "
-        data_profile += f"Sample:\n{numeric.head(3).to_string()}"
+            # AI reads the problem to understand this question
+            q_analysis = us._call(
+                f"分析子问题{q}。回答: 1)这问在求解什么 2)需要什么类型的数据 "
+                "3)应该用什么数学方法 4)预期输出什么结果。用中文。",
+                f"题目:\n{problem_text[:3000]}\n\n可用的数据文件:\n"
+                + "\n".join(f"{k}: {v.shape} cols={list(v.columns)[:5]}" for k,v in data_files.items()),
+                max_tok=4000)
+            print(f"  Q{q} analysis: {q_analysis[:200]}...")
 
-        solver_choice = "routing"  # default
-        if api_key:
-            # AI decides which solver to use
-            try:
-                from mathmodel.pipeline.universal_solver import UniversalSolver
-                us = UniversalSolver(api_key=api_key)
-                choice = us._call(
-                    "分析这个数据表格的特征,从以下选择最合适的求解器: "
-                    "routing(稀疏距离矩阵→TSP/VRP), evaluation(多指标→TOPSIS/AHP), "
-                    "prediction(时序→GM(1,1)/ARIMA), optimization(成本收益→背包/IP), "
-                    "statistics(多变量→相关分析/PCA), clustering(样本→KMeans)。"
-                    "只回复一个英文单词。",
-                    f"数据:\n{data_profile}", max_tok=50)
-                solver_choice = choice.strip().lower()
-                print(f"  AI chose: {solver_choice}")
-            except: pass
+            # Try the optimal solver first, fall back to others
+            result = None
+            for df_name, df in data_files.items():
+                if df_name.endswith("_norm"): continue
+                numeric = df.select_dtypes(include=np.number)
+                if numeric.shape[1] < 2: continue
 
-        # Execute the chosen solver
-        if "routing" in solver_choice and nan_ratio > 0.1:
-            first_col = numeric.iloc[:, 0].dropna().tolist()
-            if len(first_col) >= 3 and first_col[:3] == [1.0, 2.0, 3.0]:
-                sparse = numeric.iloc[:, 1:].values.astype(float)
-            else: sparse = numeric.values.astype(float)
-            result = solve_routing(sparse)
-            all_results[f"sub_{q}"] = {
-                "total_distance": result["distance"], "tour": result["tour"],
-                "n_locations": result["n_locations"], "method": result["method"],
-                "summary": f"TSP: {result['distance']}km, {result['n_locations']}地点"
-            }
-            print(f"  Q{q}: TSP — {result['distance']}km")
-        elif "evaluation" in solver_choice or ("tops" in solver_choice and n_cols >= 3):
-            try:
-                result = solve_topsis(numeric.values.astype(float))
-                labels = df.iloc[:,0].tolist() if not pd.api.types.is_numeric_dtype(df.iloc[:,0]) else [f"Item{i+1}" for i in range(n_rows)]
-                all_results[f"sub_{q}"] = {
-                    "scores": result["scores"], "rank": result["rank"],
-                    "weights": result["weights"], "labels": labels,
-                    "summary": f"TOPSIS: {n_rows}方案×{n_cols}指标"
-                }
-                print(f"  Q{q}: TOPSIS done")
-            except Exception as e: all_results[f"sub_{q}"] = {"summary": f"Eval failed: {e}"}
-        elif "prediction" in solver_choice and n_rows >= 4:
-            try:
-                data = numeric.iloc[:,0].dropna().tolist()
-                result = solve_grey_forecast(data, steps=3)
-                all_results[f"sub_{q}"] = {
-                    "forecast": [round(v,2) for v in result["forecast"]],
-                    "mape": result["mape"], "grade": result["grade"],
-                    "summary": f"GM(1,1): MAPE={result['mape']:.2f}%"
-                }
-                print(f"  Q{q}: GM(1,1) — MAPE={result['mape']:.2f}%")
-            except Exception as e: all_results[f"sub_{q}"] = {"summary": f"Pred failed: {e}"}
-        elif "optimization" in solver_choice or ("knapsack" in solver_choice and n_cols >= 2):
-            try:
-                costs = numeric.iloc[:,1].values.astype(float).tolist()
-                benefits = numeric.iloc[:,2].values.astype(float).tolist() if n_cols>2 else numeric.iloc[:,0].tolist()
-                result = solve_knapsack(costs, benefits)
-                all_results[f"sub_{q}"] = {"selection": result["selection"],
-                    "total_cost": result["total_cost"], "total_benefit": result["total_benefit"],
-                    "summary": f"Knapsack: {len(result['selection'])} selected"}
-                print(f"  Q{q}: Knapsack — {len(result['selection'])} items")
-            except Exception as e: all_results[f"sub_{q}"] = {"summary": f"Opt failed: {e}"}
-        else:
-            all_results[f"sub_{q}"] = {"summary": f"AI chose '{solver_choice}' but could not execute", "status": "unknown"}
-            print(f"  Q{q}: Unknown solver '{solver_choice}'")
+                # Detect data type and solve
+                nan_r = numeric.isnull().sum().sum() / max(numeric.size, 1)
+                if nan_r > 0.1 and numeric.shape[1] >= numeric.shape[0] - 2:
+                    # Sparse matrix → routing
+                    fc = numeric.iloc[:,0].dropna().tolist()
+                    sparse = (numeric.iloc[:,1:].values.astype(float) if len(fc)>=3 and fc[:3]==[1,2,3]
+                              else numeric.values.astype(float))
+                    r = solve_routing(sparse)
+                    result = {"total_distance": r["distance"], "tour": r["tour"],
+                              "n_locations": r["n_locations"], "method": r["method"],
+                              "used_file": df_name,
+                              "summary": f"TSP最短路径: {r['distance']}km, {r['n_locations']}地点"}
+                    print(f"  Q{q}: TSP({df_name}) → {r['distance']}km")
+                    break
+                elif numeric.shape[1] >= 3:
+                    r = solve_topsis(numeric.values.astype(float))
+                    labels = df.iloc[:,0].tolist()
+                    result = {"scores": r["scores"], "rank": r["rank"], "weights": r["weights"],
+                              "labels": labels, "used_file": df_name,
+                              "summary": f"TOPSIS: {numeric.shape[0]}方案"}
+                    print(f"  Q{q}: TOPSIS({df_name}) done")
+                    break
+                elif numeric.shape[0] >= 4:
+                    r = solve_grey_forecast(numeric.iloc[:,0].dropna().tolist(), 3)
+                    result = {"forecast": [round(v,2) for v in r["forecast"]],
+                              "mape": r["mape"], "used_file": df_name,
+                              "summary": f"GM(1,1): MAPE={r['mape']:.2f}%"}
+                    print(f"  Q{q}: GM(1,1)({df_name}) MAPE={r['mape']:.2f}%")
+                    break
+
+            if result is not None:
+                all_results[f"sub_{q}"] = result
+            else:
+                all_results[f"sub_{q}"] = {"summary": "No suitable solver found", "status": "skipped"}
+    else:
+        print("  No API key — using auto-detection only")
+        for q in range(1, sub_count + 1):
+            all_results[f"sub_{q}"] = {"summary": "Skipped (no API key)"}
 
     # === Phase 2: Skills pipeline (5M token AI) ===
     ai_content = {}
