@@ -1,186 +1,272 @@
-"""MathModel Toolkit — 专用求解器 + Skills管线，5M token/篇
-用法：python start.py
-求解: 确定性算法(Floyd/TOPSIS/GM/IP)保证正确
-管线: 6阶段×195次AI调用 深度分析+写作+验证"""
-import sys, json, warnings, datetime
+"""MathModel Toolkit — 全部靠AI，不硬编码任何逻辑"""
+import sys, json, warnings, datetime, subprocess, tempfile, time
 from pathlib import Path
 import numpy as np, pandas as pd
 import matplotlib; matplotlib.use('Agg')
+import urllib.request
 warnings.filterwarnings('ignore')
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from mathmodel.utils import set_seed
-from mathmodel.paper.word_writer import generate_paper
-from mathmodel.pipeline.rich_progress import PhaseTracker, print_header, print_section
-
-set_seed(42)
 PROBLEMS_DIR = Path(__file__).parent / "problems"
 OUTPUT_DIR = Path(__file__).parent / "output"
 INTERACTIVE = "--interactive" in sys.argv or "-i" in sys.argv
 
 
-def main():
-    # === Menu ===
-    from mathmodel.pipeline.menu import show_menu
-    contest_type, max_questions, max_pages, max_figures, user_notes = show_menu()
-    tracker = PhaseTracker(title="MathModel Toolkit")
-    print_header("MathModel Toolkit — Solvers + AI Pipeline")
+class AI:
+    """AI客户端 — 所有决策都通过它"""
 
-    # === Load problem + data ===
-    problem_dirs = sorted([d for d in PROBLEMS_DIR.iterdir()
-                           if d.is_dir() and not d.name.startswith('.')])
-    if not problem_dirs: print("ERROR: No problems found"); sys.exit(1)
-    selected = problem_dirs[0]
-    out_dir = OUTPUT_DIR / selected.name; out_dir.mkdir(parents=True, exist_ok=True)
-    fig_dir = out_dir / "figures"; fig_dir.mkdir(parents=True, exist_ok=True)
-    print(f"  Output: {out_dir}")
+    def __init__(self, api_key: str):
+        self.key = api_key
+        self.calls = 0
 
-    problem_text = ""; data_files = {}
-    for f in sorted(selected.iterdir()):
-        s = f.suffix.lower()
-        if s == '.txt': problem_text = f.read_text(encoding='utf-8'); print(f"[doc] {f.name} ({len(problem_text)} chars)")
-        elif s == '.pdf':
+    def ask(self, system: str, user: str, max_tok: int = 8000) -> str:
+        body = json.dumps({
+            "model": "deepseek-chat", "temperature": 0.1, "max_tokens": max_tok,
+            "messages": [{"role": "system", "content": system},
+                         {"role": "user", "content": user}],
+        }).encode()
+        req = urllib.request.Request("https://api.deepseek.com/v1/chat/completions",
+            data=body, headers={"Content-Type": "application/json",
+                               "Authorization": f"Bearer {self.key}"}, method="POST")
+        for _ in range(3):
             try:
-                import pdfplumber
-                with pdfplumber.open(str(f)) as pdf:
-                    problem_text = '\n\n'.join(p.extract_text() or "" for p in pdf.pages)
-                print(f"[doc] {f.name} ({len(problem_text)} chars)")
-            except Exception as e: print(f"[doc] {f.name}: {e}")
-        elif s in ('.xlsx', '.xls'):
-            df = pd.read_excel(f, nrows=500) if f.stat().st_size > 5e6 else pd.read_excel(f)
-            data_files[f.stem] = df; print(f"[data] {f.name} {df.shape}")
-        elif s == '.csv':
-            df = pd.read_csv(f, low_memory=True, nrows=500) if f.stat().st_size > 5e6 else pd.read_csv(f)
-            data_files[f.stem] = df; print(f"[data] {f.name} {df.shape}")
+                with urllib.request.urlopen(req, timeout=300) as r:
+                    self.calls += 1
+                    return json.loads(r.read())["choices"][0]["message"]["content"]
+            except: time.sleep(5)
+        return ""
 
-    if not problem_text: print("ERROR: No problem text"); sys.exit(1)
+    def extract_code(self, text: str) -> str:
+        if "```python" in text: return text.split("```python")[1].split("```")[0].strip()
+        if "```" in text: return text.split("```")[1].split("```")[0].strip()
+        return text.strip()
 
-    # === Get API key ===
+    def run_code(self, code: str, name: str, cwd: str, timeout: int = 180) -> str:
+        path = Path(tempfile.gettempdir()) / f"{name}.py"
+        path.write_text(code, encoding="utf-8")
+        try:
+            r = subprocess.run([sys.executable, str(path)],
+                capture_output=True, text=True, timeout=timeout,
+                cwd=cwd, encoding='utf-8', errors='replace')
+            return (r.stdout[-5000:] or "") + "\n" + (r.stderr[-3000:] or "")
+        except subprocess.TimeoutExpired: return "TIMEOUT"
+        except Exception as e: return f"ERROR: {e}"
+
+
+def main():
+    print("\n" + "=" * 60)
+    print("  MathModel Toolkit — AI-Native Universal Solver")
+    print("=" * 60)
+
+    # === API ===
     api_key = ""
     try:
         from api.config import APIConfig
         cfg = APIConfig(); api_key = cfg.api_key if cfg.is_configured else ""
     except: pass
+    if not api_key:
+        print("ERROR: No API key configured. Edit .env file.")
+        sys.exit(1)
 
-    # === Phase 1: AI reads problem → understands each question → picks data+method ===
-    print_section("Phase 1: AI Understanding + Solving")
-    from mathmodel.pipeline.dedicated_solvers import solve_routing, solve_knapsack, solve_topsis, solve_grey_forecast
+    ai = AI(api_key)
 
+    # === Menu ===
+    from mathmodel.pipeline.menu import show_menu
+    contest_type, max_questions, max_pages, max_figures, user_notes = show_menu()
+
+    # === Load files ===
+    problem_dirs = sorted([d for d in PROBLEMS_DIR.iterdir()
+                           if d.is_dir() and not d.name.startswith('.')])
+    if not problem_dirs: print("ERROR: No problems"); sys.exit(1)
+    selected = problem_dirs[0]
+    out_dir = OUTPUT_DIR / selected.name; out_dir.mkdir(parents=True, exist_ok=True)
+    fig_dir = out_dir / "figures"; fig_dir.mkdir(parents=True, exist_ok=True)
+    print(f"  Output: {out_dir}\n")
+
+    problem_text = ""; data_files = {}; file_list = []
+    for f in sorted(selected.iterdir()):
+        s = f.suffix.lower()
+        if s == '.txt': problem_text = f.read_text(encoding='utf-8')
+        elif s == '.pdf':
+            try:
+                import pdfplumber
+                with pdfplumber.open(str(f)) as pdf:
+                    problem_text = '\n\n'.join(p.extract_text() or "" for p in pdf.pages)
+            except: problem_text = f"PDF file: {f.name}"
+        elif s in ('.xlsx', '.xls'):
+            df = pd.read_excel(f, nrows=500) if f.stat().st_size > 5e6 else pd.read_excel(f)
+            data_files[f.name] = df; file_list.append(f.name)
+        elif s == '.csv':
+            df = pd.read_csv(f, nrows=500) if f.stat().st_size > 5e6 else pd.read_csv(f)
+            data_files[f.name] = df; file_list.append(f.name)
+    print(f"  Files: {file_list}\n  Problem: {len(problem_text)} chars\n")
+
+    if not problem_text: print("ERROR: No problem text"); sys.exit(1)
+
+    # Build complete context for AI
+    all_data_desc = ""
+    for name, df in data_files.items():
+        all_data_desc += f"\n{'='*50}\nFILE: {name} ({df.shape[0]}x{df.shape[1]})\n"
+        all_data_desc += f"Columns: {list(df.columns)}\n"
+        all_data_desc += f"Dtypes:\n{df.dtypes.to_string()}\n"
+        all_data_desc += f"First 20 rows:\n{df.head(20).to_string()}\n"
+        all_data_desc += f"Describe:\n{df.describe().to_string()}\n"
+        all_data_desc += f"NaN count: {df.isnull().sum().sum()}\n"
+
+    full_context = f"PROBLEM:\n{problem_text}\n\nDATA FILES:\n{all_data_desc}"
+    if user_notes: full_context += f"\n\nUSER REQUIREMENTS:\n{user_notes}"
+
+    # === AI: Figure out how many sub-problems ===
+    print("=" * 40)
+    print("  AI analyzing problem structure...")
+    sub_analysis = ai.ask(
+        "Read this math modeling problem. How many sub-problems (问题1/2/3/4) are there? "
+        "For each: what type (优化/预测/评价/统计/分类)? what data file? what method? "
+        "Return as: Q1: type=优化, file=附件1.xlsx, method=TSP. One per line.",
+        full_context[:15000], max_tok=2000)
+    print(f"  AI: {sub_analysis[:500]}")
+
+    # Parse sub-problem count from AI response
+    sub_count = min(max_questions, sum(1 for line in sub_analysis.split('\n') if line.strip().startswith('Q')))
+    if sub_count < 1: sub_count = min(max_questions, 2)
+    print(f"  Detected {sub_count} sub-problems\n")
+
+    # === AI: Solve each sub-problem ===
     all_results = {}
-    sub_count = min(max_questions, 4)
+    for q in range(1, sub_count + 1):
+        print("=" * 40)
+        print(f"  Q{q}: AI writing solution code (up to 25 rounds)...")
 
-    if api_key:
-        # AI reads the problem and figures out what each question needs
-        from mathmodel.pipeline.universal_solver import UniversalSolver
-        us = UniversalSolver(api_key=api_key)
+        last_code = ""; last_output = ""
+        for r in range(1, 26):  # 25 rounds max
+            print(f"  Round {r}/25", end=" ")
 
-        for q in range(1, sub_count + 1):
-            print(f"\n  Q{q}: AI analyzing problem + matching data...")
+            if r == 1:
+                prompt = f"""Solve sub-problem {q}. Write a COMPLETE Python script.
+The script must:
+- Read data from these files in the current directory: {file_list}
+- Use ONLY: numpy, scipy, pandas, matplotlib, sklearn (NO networkx/cvxpy/ortools)
+- Print all key numerical results clearly
+- Save at least 4 figures to {fig_dir}/sub_{q}_fig_{{n}}.pdf
+  - Figures: Chinese labels, academic colors, dpi=300, figsize(10,6)
+  - Set font: plt.rcParams['font.sans-serif']=['SimHei','Microsoft YaHei','DejaVu Sans']
+- Be complete and executable (python script.py should work)
 
-            # AI reads the problem to understand this question
-            q_analysis = us._call(
-                f"分析子问题{q}。回答: 1)这问在求解什么 2)需要什么类型的数据 "
-                "3)应该用什么数学方法 4)预期输出什么结果。用中文。",
-                f"题目:\n{problem_text[:3000]}\n\n可用的数据文件:\n"
-                + "\n".join(f"{k}: {v.shape} cols={list(v.columns)[:5]}" for k,v in data_files.items()),
-                max_tok=4000)
-            print(f"  Q{q} analysis: {q_analysis[:200]}...")
-
-            # Try the optimal solver first, fall back to others
-            result = None
-            for df_name, df in data_files.items():
-                if df_name.endswith("_norm"): continue
-                numeric = df.select_dtypes(include=np.number)
-                if numeric.shape[1] < 2: continue
-
-                # Detect data type and solve
-                nan_r = numeric.isnull().sum().sum() / max(numeric.size, 1)
-                if nan_r > 0.1 and numeric.shape[1] >= numeric.shape[0] - 2:
-                    # Sparse matrix → routing
-                    fc = numeric.iloc[:,0].dropna().tolist()
-                    sparse = (numeric.iloc[:,1:].values.astype(float) if len(fc)>=3 and fc[:3]==[1,2,3]
-                              else numeric.values.astype(float))
-                    r = solve_routing(sparse)
-                    result = {"total_distance": r["distance"], "tour": r["tour"],
-                              "n_locations": r["n_locations"], "method": r["method"],
-                              "used_file": df_name,
-                              "summary": f"TSP最短路径: {r['distance']}km, {r['n_locations']}地点"}
-                    print(f"  Q{q}: TSP({df_name}) → {r['distance']}km")
-                    break
-                elif numeric.shape[1] >= 3:
-                    r = solve_topsis(numeric.values.astype(float))
-                    labels = df.iloc[:,0].tolist()
-                    result = {"scores": r["scores"], "rank": r["rank"], "weights": r["weights"],
-                              "labels": labels, "used_file": df_name,
-                              "summary": f"TOPSIS: {numeric.shape[0]}方案"}
-                    print(f"  Q{q}: TOPSIS({df_name}) done")
-                    break
-                elif numeric.shape[0] >= 4:
-                    r = solve_grey_forecast(numeric.iloc[:,0].dropna().tolist(), 3)
-                    result = {"forecast": [round(v,2) for v in r["forecast"]],
-                              "mape": r["mape"], "used_file": df_name,
-                              "summary": f"GM(1,1): MAPE={r['mape']:.2f}%"}
-                    print(f"  Q{q}: GM(1,1)({df_name}) MAPE={r['mape']:.2f}%")
-                    break
-
-            if result is not None:
-                all_results[f"sub_{q}"] = result
+{full_context[:20000]}"""
             else:
-                all_results[f"sub_{q}"] = {"summary": "No suitable solver found", "status": "skipped"}
-    else:
-        print("  No API key — using auto-detection only")
-        for q in range(1, sub_count + 1):
-            all_results[f"sub_{q}"] = {"summary": "Skipped (no API key)"}
+                prompt = f"""Previous attempt failed or needs improvement. Output was:
+{last_output[:4000]}
 
-    # === Phase 2: Skills pipeline (5M token AI) ===
+Fix ALL issues and write a complete corrected Python script.
+Sub-problem {q}. Same requirements as before.
+Save figures to {fig_dir}/sub_{q}_fig_{{n}}.pdf
+Current directory has these files: {file_list}"""
+
+            code = ai.extract_code(ai.ask(
+                "You are a math modeling Python expert. Write complete, working code.",
+                prompt, max_tok=8000))
+            if len(code) < 200:
+                print("(too short)")
+                continue
+
+            output = ai.run_code(code, f"q{q}_r{r}", str(Path(__file__).parent))
+            last_code = code; last_output = output
+            ok = "Traceback" not in output and "ModuleNotFoundError" not in output and "Error" not in output.split('\n')[0]
+
+            print(f"({len(code)} chars, {'OK' if ok else 'ERR'})")
+
+            if ok:
+                # AI checks if results are reasonable
+                check = ai.ask(
+                    "Check these results. Are the numbers reasonable? Reply PASS if acceptable, or explain what's wrong.",
+                    f"Sub-problem {q}:\n{output[:3000]}", max_tok=500)
+                if "PASS" in check:
+                    print(f"  Q{q}: Solution accepted after {r} rounds")
+                    break
+
+        all_results[f"sub_{q}"] = {
+            "code": last_code, "output": last_output,
+            "rounds": r, "summary": last_output[:800]
+        }
+
+    # === AI: Write paper ===
+    print("\n" + "=" * 40)
+    print("  AI writing paper...")
+
+    result_summary = "\n".join(
+        f"Q{q}: {all_results.get(f'sub_{q}',{}).get('output','')[:500]}"
+        for q in range(1, sub_count + 1))
+
     ai_content = {}
-    if api_key:
-        print_section("Phase 2: AI Skills Pipeline (6 stages, ~5M tokens)")
-        from mathmodel.pipeline.skills_pipeline import SkillsPipeline
-        sp = SkillsPipeline(api_key=api_key)
-        pipeline_result = sp.run(problem_text, data_files, str(fig_dir), all_results, sub_count)
 
-        # Extract paper content
-        paper = pipeline_result.get("paper", {})
-        ai_content["abstract"] = paper.get("abstract", "")
-        ai_content["title"] = paper.get("title", "")
-        for q in range(1, sub_count + 1):
-            ai_content[f"section_{q}"] = paper.get(f"section_{q}", "")
-        ai_content["sensitivity"] = paper.get("sensitivity", "")
-        ai_content["evaluation"] = paper.get("evaluation", "")
-        ai_content["conclusion"] = paper.get("conclusion", "")
-        total_tok = (sp.total_in + sp.total_out) // 1000
-        print(f"\n  Pipeline: {sp.calls} calls, {total_tok}K tokens")
+    # Abstract (3 rounds)
+    abs_text = ai.ask("Write a 400-500 word abstract for a CUMCM paper. Chinese. Include problem summary, methods, and key numerical results.",
+                      f"Problem:\n{problem_text[:2000]}\nResults:\n{result_summary}", max_tok=4000)
+    for _ in range(2):
+        abs_text = ai.ask("Review and rewrite this abstract to be better. More precise numbers, clearer logic.",
+                          f"Current:\n{abs_text[:3000]}", max_tok=4000)
+    ai_content["abstract"] = abs_text; print(f"  Abstract: {len(abs_text)} chars")
 
-    # === Phase 3: Generate Word paper ===
-    print_section("Phase 3: Paper Generation")
-    ts = datetime.datetime.now().strftime("%H%M%S")
-    sub_list = [{"id": q, "title": f"子问题{q}", "type": "综合"} for q in range(1, sub_count + 1)]
+    # Each question section (2 rounds each)
+    for q in range(1, sub_count + 1):
+        r = all_results.get(f"sub_{q}", {})
+        sec = ai.ask(
+            f"Write the 'Model and Solution for Question {q}' section (500-800 words, Chinese). Include problem description, mathematical model, solution method, and specific numerical results.",
+            f"Results:\n{r.get('output','')[:2000]}", max_tok=4000)
+        sec = ai.ask("Review and improve this section.", f"Current:\n{sec[:3000]}", max_tok=4000)
+        ai_content[f"section_{q}"] = sec
+        print(f"  Q{q} section: {len(sec)} chars")
+
+    # Sensitivity + Evaluation + Conclusion
+    for key, prompt in [
+        ("sensitivity", "Write sensitivity analysis (300-500 words, Chinese)."),
+        ("evaluation", "Write model evaluation with advantages and limitations (Chinese)."),
+        ("conclusion", "Write conclusion summarizing all findings with key numbers (Chinese)."),
+    ]:
+        text = ai.ask(prompt, f"Results:\n{result_summary}", max_tok=4000)
+        text = ai.ask("Review and improve.", f"Current:\n{text[:3000]}", max_tok=4000)
+        ai_content[key] = text
+        print(f"  {key}: {len(text)} chars")
+
+    print(f"\n  Total AI calls: {ai.calls}")
+
+    # === Generate Word paper ===
+    print("\n" + "=" * 40)
+    print("  Generating Word paper...")
+
+    sub_list = [{"id": q, "title": f"Sub-problem {q}", "type": "综合"} for q in range(1, sub_count + 1)]
 
     try:
+        from mathmodel.paper.word_writer import generate_paper
+        ts = datetime.datetime.now().strftime("%H%M%S")
         paper_path = generate_paper(
             output_path=str(out_dir / f"论文_{selected.name}_{ts}.docx"),
             problem_text=problem_text,
             analysis={"sub_problems": sub_list},
-            recommendations=[{"summary": "Solvers + AI Pipeline", "sub_problems": sub_list}],
+            recommendations=[{"summary": "AI-Native Solving", "sub_problems": sub_list}],
             results=all_results, figures_dir=str(fig_dir), ai_content=ai_content)
-        print(f"  Word: {paper_path}")
+        print(f"  Paper: {paper_path}")
     except Exception as e:
-        print(f"  Word failed: {e}")
+        print(f"  generate_paper failed: {e}")
         from docx import Document
         doc = Document()
-        doc.add_heading("论文", 0)
+        doc.add_heading("AI-Generated Paper", 0)
         for q in range(1, sub_count + 1):
             doc.add_heading(f"Q{q}", 1)
-            doc.add_paragraph(all_results.get(f"sub_{q}", {}).get("summary", ""))
+            doc.add_paragraph(all_results.get(f"sub_{q}", {}).get("output", "")[:1000])
         paper_path = out_dir / f"论文_{ts}.docx"; doc.save(str(paper_path))
 
-    # === Done ===
-    tracker.finish()
+    # === Save results ===
+    json.dump({"sub_problems": sub_list, "results": {k: v.get("output","")[:1000] for k, v in all_results.items()}},
+              open(out_dir / "results.json", "w", encoding="utf-8"), ensure_ascii=False, indent=2, default=str)
+
     print(f"\n{'='*60}")
-    print(f"  OUTPUT: {out_dir}")
+    print(f"  DONE!")
+    print(f"  Output: {out_dir}")
     print(f"  Paper:  {paper_path}")
+    print(f"  Figures: {fig_dir}")
+    print(f"  AI calls: {ai.calls}")
     print(f"{'='*60}")
 
 
