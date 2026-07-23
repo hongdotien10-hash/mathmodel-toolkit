@@ -1,5 +1,5 @@
 """MathModel Toolkit — 一个prompt出论文"""
-import sys, json, subprocess, tempfile, time, shutil
+import sys, json, subprocess, time, shutil
 from pathlib import Path
 import urllib.request
 
@@ -26,11 +26,23 @@ out = OUTPUT_DIR / problem_dir.name
 out.mkdir(parents=True, exist_ok=True)
 (out / "figures").mkdir(exist_ok=True)
 
+# Clean output — don't reuse old results
+if out.exists():
+    import shutil
+    for old in out.glob("ai_response.txt"): old.unlink()
+    for old in out.glob("prompt.txt"): old.unlink()
+
 print(f"\n  Problem: {problem_dir.name}")
 print(f"  Output:  {out}\n")
 
 problem_text = ""; data_text = ""
 for f in sorted(problem_dir.iterdir()):
+    # Skip old output files — only read problem data
+    if f.name in ('ai_response.txt', 'prompt.txt', 'solver_output.txt', 'results.json',
+                  'data.csv', 'solve.py') or f.name.startswith('论文_'):
+        continue
+    if f.suffix in ('.docx', '.doc') and '作业' in f.name:
+        continue  # skip unrelated homework files
     s = f.suffix.lower()
     if s == '.txt':
         problem_text = f.read_text(encoding='utf-8')
