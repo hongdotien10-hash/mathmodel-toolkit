@@ -273,6 +273,14 @@ def main():
     print_section("PRO Phase 6: Professional Chart Suites")
     cs = ChartSuite()
 
+    # === Auto-generate all relevant figures from figure library ===
+    try:
+        from mathmodel.visualization.figure_library import auto_generate_figures
+        generated = auto_generate_figures(all_results, data_files, fig_dir, sub_problems)
+        print(f"  Auto-generated {len(generated)} figures: {', '.join(generated[:10])}")
+    except Exception as e:
+        print(f"  Figure library: {e}")
+
     # Generate professional figures from real data
     try:
         from mathmodel.pipeline.professional_figures import (
