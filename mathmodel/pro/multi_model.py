@@ -389,64 +389,105 @@ class ModelContest:
     # ---- Routing (VRP/TSP) ----
     def _run_routing(self, method_name: str, numeric: "pd.DataFrame", df: "pd.DataFrame",
                      sp: dict) -> dict:
-        """VRP/TSP 路径优化"""
+        """VRP/TSP 路径优化 — 支持稀疏距离矩阵和坐标数据"""
         import re
         from mathmodel.models.graph import GraphSolver
         gs = GraphSolver()
-
-        # Find coordinate columns
-        coord_cols = []
-        for col in numeric.columns:
-            cl = str(col).lower()
-            if any(kw in cl for kw in ['x', 'y', '坐标', '经度', '纬度', 'lat', 'lon', 'lng']):
-                coord_cols.append(col)
-        if len(coord_cols) < 2:
-            coord_cols = numeric.columns[:2].tolist()
-
-        coords = numeric[coord_cols].values.astype(float)
-        n = len(coords)
-
-        # Build distance matrix
-        D = np.zeros((n, n))
-        for i in range(n):
-            for j in range(n):
-                D[i, j] = np.sqrt(np.sum((coords[i] - coords[j])**2))
-
-        # Get capacity
+        n = numeric.shape[0]
         sp_text = sp.get("title", "") + sp.get("full_text", "")
+
+        # Check if sparse distance matrix (many NaN)
+        nan_ratio = numeric.isnull().sum().sum() / max(n * numeric.shape[1], 1)
+        is_sparse_matrix = (nan_ratio > 0.3 and n >= 4 and numeric.shape[1] >= n - 2)
+
+        if is_sparse_matrix:
+            # Floyd-Warshall to complete the graph
+            INF = 1e9
+            vals = numeric.values.astype(float)
+            D = np.full((n, n), INF)
+            for i in range(n):
+                for j in range(min(n, vals.shape[1])):
+                    val = vals[i, j]
+                    if not np.isnan(val) and val > 0:
+                        D[i, j] = val
+                    elif i == j:
+                        D[i, j] = 0
+            # Make symmetric
+            for i in range(n):
+                for j in range(n):
+                    if D[i, j] < INF and D[j, i] >= INF:
+                        D[j, i] = D[i, j]
+            # Floyd
+            for k in range(n):
+                for i in range(n):
+                    if D[i, k] >= INF: continue
+                    for j in range(n):
+                        if D[i, k] + D[k, j] < D[i, j]:
+                            D[i, j] = D[i, k] + D[k, j]
+        else:
+            # Coordinate data
+            coord_cols = []
+            for col in numeric.columns:
+                cl = str(col).lower()
+                if any(kw in cl for kw in ['x', 'y', '坐标', '经度', '纬度', 'lat', 'lon', 'lng']):
+                    coord_cols.append(col)
+            if len(coord_cols) < 2:
+                coord_cols = numeric.columns[:2].tolist()
+            coords = numeric[coord_cols].values.astype(float)
+            D = np.zeros((n, n))
+            for i in range(n):
+                for j in range(n):
+                    D[i, j] = np.sqrt(np.sum((coords[i] - coords[j])**2))
+
+        # TSP: multi-start nearest neighbor
+        best_dist, best_tour = float('inf'), None
+        for start in range(min(n, 10)):
+            r = gs.tsp_nearest_neighbor(D, start=start)
+            if r['total_distance'] < best_dist:
+                best_dist = r['total_distance']; best_tour = r['tour']
+
+        # 2-opt improvement
+        improved = True; iters = 0
+        while improved and iters < 50:
+            improved = False; iters += 1
+            for i in range(1, len(best_tour) - 3):
+                for j in range(i + 2, len(best_tour) - 1):
+                    old = D[best_tour[i-1]][best_tour[i]] + D[best_tour[j]][best_tour[j+1]]
+                    new = D[best_tour[i-1]][best_tour[j]] + D[best_tour[i]][best_tour[j+1]]
+                    if new < old - 1e-10:
+                        best_tour[i:j+1] = reversed(best_tour[i:j+1])
+                        best_dist = best_dist - old + new
+                        improved = True
+
+        # Capacity for VRP
         cap_match = re.search(r'(\d+)\s*(kg|千克|公斤|吨|t)', sp_text.lower())
         capacity = float(cap_match.group(1)) if cap_match else float('inf')
         if cap_match and cap_match.group(2) in ('吨', 't'):
             capacity *= 1000
 
-        # Get demands
         demand_col = None
-        for col in numeric.columns:
+        for col in df.columns:
             cl = str(col).lower()
-            if any(kw in cl for kw in ['需求', '重量', 'demand', 'weight', 'load', '量']):
+            if any(kw in cl for kw in ['需求', '重量', 'demand', 'weight', 'load']):
                 demand_col = col; break
-        demands = numeric[demand_col].values.astype(float).tolist() if demand_col else [0]*n
 
-        if capacity == float('inf') or sum(demands) <= capacity:
-            # TSP
-            result = gs.tsp_nearest_neighbor(D, start=0)
-            return {"metric_name": "总距离", "metric_value": round(result["total_distance"], 1),
-                    "tour": result["tour"], "n_vehicles": 1}
-        else:
-            # VRP: split into routes by capacity
-            routes, unvisited = [], set(range(1, n))
-            while unvisited:
-                route, load, curr = [0], 0, 0
-                while unvisited:
-                    cand = [(j, D[curr, j]) for j in unvisited if demands[j] + load <= capacity]
-                    if not cand: break
-                    nxt, _ = min(cand, key=lambda x: x[1])
-                    route.append(nxt); load += demands[nxt]
-                    unvisited.remove(nxt); curr = nxt
-                route.append(0); routes.append(route)
-            total = sum(sum(D[r[j]][r[j+1]] for j in range(len(r)-1)) for r in routes)
-            return {"metric_name": "总距离", "metric_value": round(total, 1),
-                    "n_vehicles": len(routes), "routes": len(routes)}
+        if demand_col and capacity < float('inf'):
+            demands = df[demand_col].values.astype(float).tolist()
+            if sum(demands) > capacity:
+                # VRP: split TSP tour by capacity
+                routes, idx = [], 0
+                while idx < len(best_tour) - 1:
+                    route, load = [0], 0
+                    while idx < len(best_tour) - 1 and load + demands[best_tour[idx+1]] <= capacity:
+                        route.append(best_tour[idx+1]); load += demands[best_tour[idx+1]]; idx += 1
+                    route.append(0); routes.append(route)
+                    if len(route) == 2: idx += 1
+                total = sum(sum(D[r[j]][r[j+1]] for j in range(len(r)-1)) for r in routes)
+                return {"metric_name": "总距离", "metric_value": round(total, 1),
+                        "n_vehicles": len(routes), "routes": len(routes)}
+
+        return {"metric_name": "总距离", "metric_value": round(best_dist, 1),
+                "tour": best_tour, "n_vehicles": 1}
 
     # ================================================================
     # 本地指标对比（无API时使用）
@@ -463,7 +504,7 @@ class ModelContest:
         # 确定指标方向：越大越好还是越小越好
         bigger_better = {"R²", "r_squared", "explained_var", "Top2区分度", "分辨率",
                         "最强|r|", "最强|ρ|", "累积方差(前2)", "目标值", "松驰目标值"}
-        smaller_better = {"MAPE(%)", "CR一致性"}
+        smaller_better = {"MAPE(%)", "CR一致性", "总距离"}
 
         best_model = None; best_score = None
         for r in valid:

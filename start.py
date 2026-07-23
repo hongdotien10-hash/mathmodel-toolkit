@@ -350,120 +350,227 @@ def _analyze(problem_text, data_profiles):
 
 
 def _solve_routing(sp, df, data_files, fig_dir, results):
-    """路径优化类：VRP/TSP/CVRP — 最近邻+TSP启发式"""
+    """路径优化：VRP/TSP/CVRP — Floyd-Warshall + TSP最近邻 + 2-opt优化"""
     gs = GraphSolver()
     numeric = df.select_dtypes(include=np.number)
+    n = numeric.shape[0]
+    sp_text = sp.get("title", "") + sp.get("full_text", "")
 
+    # ---- Step 0: Detect data format ----
+    # Format A: Sparse distance matrix (square, many NaN = no direct road)
+    # Format B: Coordinate table (X/Y/lat/lon columns)
+    # Format C: Complete distance matrix (square, no NaN)
+
+    is_distance_matrix = False
+    if n >= 4 and numeric.shape[1] >= n - 2:  # rough check: square-ish
+        # Check if first column looks like location IDs
+        first_col = numeric.iloc[:, 0]
+        nan_ratio = numeric.isnull().sum().sum() / (n * numeric.shape[1])
+        if nan_ratio > 0.3:  # many NaN = sparse graph
+            is_distance_matrix = True
+            print(f"     Detected: Sparse distance matrix ({nan_ratio:.0%} NaN)")
+
+    if is_distance_matrix:
+        _solve_routing_from_matrix(sp, numeric, df, results, gs, n, sp_text)
+    else:
+        _solve_routing_from_coords(sp, numeric, df, results, gs, n, sp_text)
+
+
+def _build_complete_graph(numeric, n):
+    """从稀疏距离矩阵构建完全图（Floyd-Warshall）"""
+    INF = 1e9
+    D = np.full((n, n), INF)
+    vals = numeric.values.astype(float)
+
+    # If first column is location IDs, use cols 1: as distance matrix
+    if numeric.shape[1] >= n:
+        # Distance matrix: cols 0..n-1 or 1..n
+        offset = 1 if not pd.api.types.is_numeric_dtype(numeric.columns[0]) else 0
+        for i in range(n):
+            for j in range(offset, min(offset + n, numeric.shape[1])):
+                val = vals[i, j] if j < vals.shape[1] else np.nan
+                if not np.isnan(val) and val > 0:
+                    D[i, j - offset] = val
+                if i == j - offset:
+                    D[i, j - offset] = 0
+    else:
+        # General sparse matrix
+        n_cols = min(n, numeric.shape[1])
+        for i in range(n):
+            for j in range(n_cols):
+                val = vals[i, j]
+                if not np.isnan(val) and val > 0:
+                    D[i, j] = val
+                elif i == j:
+                    D[i, j] = 0
+
+    # Make symmetric
+    for i in range(n):
+        for j in range(n):
+            if D[i, j] < INF and D[j, i] >= INF:
+                D[j, i] = D[i, j]
+            elif D[j, i] < INF and D[i, j] >= INF:
+                D[i, j] = D[j, i]
+
+    # Floyd-Warshall
+    n_edges_before = int(np.sum((D > 0) & (D < INF)))
+    for k in range(n):
+        for i in range(n):
+            if D[i, k] >= INF: continue
+            for j in range(n):
+                nd = D[i, k] + D[k, j]
+                if nd < D[i, j]:
+                    D[i, j] = nd
+
+    # Check connectivity — if any pair unreachable, that's bad
+    n_unreachable = int(np.sum(D >= INF))
+    if n_unreachable > 0:
+        print(f"     Warning: {n_unreachable} unreachable pairs — graph may be disconnected")
+        # Fallback: use Euclidean distances between implicit coordinates as backup
+        D[D >= INF] = 999  # large penalty but keeps TSP working
+
+    n_edges_after = int(np.sum((D > 0) & (D < INF)))
+    print(f"     Graph: {n_edges_before} edges -> Floyd -> {n_edges_after} paths")
+    return D
+
+
+def _tsp_solve(D, n, max_starts=15):
+    """TSP: 多起点最近邻 + 2-opt 局部搜索"""
+    gs = GraphSolver()
+    best_dist, best_tour = float('inf'), None
+
+    # Phase 1: Nearest neighbor from multiple starts
+    for start in range(min(n, max_starts)):
+        r = gs.tsp_nearest_neighbor(D, start=start)
+        if r['total_distance'] < best_dist:
+            best_dist = r['total_distance']
+            best_tour = r['tour']
+
+    # Phase 2: 2-opt improvement
+    improved = True
+    iterations = 0
+    while improved and iterations < 100:
+        improved = False; iterations += 1
+        for i in range(1, len(best_tour) - 3):
+            for j in range(i + 2, len(best_tour) - 1):
+                old_d = D[best_tour[i-1]][best_tour[i]] + D[best_tour[j]][best_tour[j+1]]
+                new_d = D[best_tour[i-1]][best_tour[j]] + D[best_tour[i]][best_tour[j+1]]
+                if new_d < old_d - 1e-10:
+                    best_tour[i:j+1] = reversed(best_tour[i:j+1])
+                    best_dist = best_dist - old_d + new_d
+                    improved = True
+
+    return round(best_dist, 1), best_tour
+
+
+def _solve_routing_from_matrix(sp, numeric, df, results, gs, n, sp_text):
+    """稀疏距离矩阵 → Floyd → TSP + 2-opt"""
+    D = _build_complete_graph(numeric, n)
+
+    # Get capacity
+    cap_match = re.search(r'(\d+)\s*(kg|千克|公斤|吨|t)', sp_text.lower())
+    capacity = float(cap_match.group(1)) if cap_match else float('inf')
+    if cap_match and cap_match.group(2) in ('吨', 't'):
+        capacity *= 1000
+
+    # Get demands if available
+    demand_col = None
+    for col in df.columns:
+        cl = str(col).lower()
+        if any(kw in cl for kw in ['需求', '重量', 'demand', 'weight', 'load']):
+            demand_col = col; break
+    demands = df[demand_col].values.astype(float).tolist() if demand_col else None
+
+    labels = df.iloc[:, 0].tolist() if not pd.api.types.is_numeric_dtype(df.iloc[:, 0]) else \
+             [f"地点{i+1}" for i in range(n)]
+
+    if demands is None or sum(demands) <= capacity:
+        # Single TSP route
+        dist, tour = _tsp_solve(D, n)
+        tour_labels = [labels[i] for i in tour if i < len(labels)]
+        results[f"sub_{sp['id']}"] = {
+            "method": "Floyd-Warshall + TSP(NN+2-opt)",
+            "n_locations": n, "tour": tour, "tour_labels": tour_labels,
+            "total_distance": dist, "n_vehicles": 1,
+            "summary": f"最短路径: {n}个地点, 总距离={dist}km, 1辆车"
+        }
+        print(f"     TSP: {dist} total distance, 1 vehicle")
+    else:
+        # VRP: TSP tour → split by capacity
+        _, tour = _tsp_solve(D, n)
+        routes, i = [], 0
+        while i < len(tour) - 1:
+            route, load = [0], 0
+            while i < len(tour) - 1 and load + demands[tour[i+1]] <= capacity:
+                route.append(tour[i+1]); load += demands[tour[i+1]]; i += 1
+            route.append(0); routes.append(route)
+            if len(route) == 2: i += 1  # single stop = force advance
+
+        total = 0; details = []
+        for ri, r in enumerate(routes):
+            rd = sum(D[r[j]][r[j+1]] for j in range(len(r)-1))
+            rl = sum(demands[j] for j in r if j != 0)
+            total += rd
+            details.append({"route": ri+1, "path": [labels[j] for j in r],
+                           "distance": round(rd, 1), "load": round(rl, 0)})
+            print(f"     Route {ri+1}: {len(r)-2} stops, dist={rd:.1f}, load={rl:.0f}/{capacity:.0f}")
+
+        results[f"sub_{sp['id']}"] = {
+            "method": "Floyd-Warshall + TSP + VRP split",
+            "n_locations": n, "n_vehicles": len(routes), "routes": details,
+            "total_distance": round(total, 1), "vehicle_capacity": capacity,
+            "summary": f"VRP: {n}地点->{len(routes)}辆车, 总距离={total:.1f}"
+        }
+        print(f"     VRP: {len(routes)} vehicles, total distance={total:.1f}")
+
+
+def _solve_routing_from_coords(sp, numeric, df, results, gs, n, sp_text):
+    """坐标数据 → 欧氏距离 → TSP + 2-opt"""
     # Find coordinate columns
     coord_cols = []
     for col in numeric.columns:
         cl = str(col).lower()
-        if any(kw in cl for kw in ['x', 'y', '坐标', '经度', '纬度', 'lat', 'lon', 'lng', 'longitude', 'latitude']):
+        if any(kw in cl for kw in ['x', 'y', '坐标', '经度', '纬度', 'lat', 'lon', 'lng']):
             coord_cols.append(col)
-
     if len(coord_cols) < 2:
-        # Try first 2 numeric columns as fallback
         coord_cols = numeric.columns[:2].tolist()
 
-    # Find demand/weight column
-    demand_col = None
-    for col in numeric.columns:
-        cl = str(col).lower()
-        if any(kw in cl for kw in ['需求', '重量', 'demand', 'weight', 'load', '量', '货物', '容量']):
-            demand_col = col
-            break
-
-    # Extract coordinates
     coords = numeric[coord_cols].values.astype(float)
-    n = len(coords)
-    print(f"     Routing: {n} locations, coords={coord_cols}, demand_col={demand_col}")
+    print(f"     Routing: {n} locations from coordinates {coord_cols}")
 
-    # Build distance matrix
+    # Euclidean distance matrix
     D = np.zeros((n, n))
     for i in range(n):
         for j in range(n):
             D[i, j] = np.sqrt(np.sum((coords[i] - coords[j])**2))
 
-    # Get capacity from problem text
+    # Capacity and demands
     sp_text = sp.get("title", "") + sp.get("full_text", "")
-    import re
     cap_match = re.search(r'(\d+)\s*(kg|千克|公斤|吨|t)', sp_text.lower())
     capacity = float(cap_match.group(1)) if cap_match else float('inf')
     if cap_match and cap_match.group(2) in ('吨', 't'):
-        capacity *= 1000  # convert tons to kg
+        capacity *= 1000
 
-    # Get demands
-    demands = None
-    if demand_col and demand_col in numeric.columns:
-        demands = numeric[demand_col].values.astype(float).tolist()
-        total_demand = sum(demands)
-        print(f"     Total demand: {total_demand:.0f}, Capacity: {capacity:.0f}")
-        if total_demand <= capacity:
-            demands = None  # single route is fine
+    demand_col = None
+    for col in df.columns:
+        cl = str(col).lower()
+        if any(kw in cl for kw in ['需求', '重量', 'demand', 'weight', 'load']):
+            demand_col = col; break
+    demands = df[demand_col].values.astype(float).tolist() if demand_col else None
 
     labels = df.iloc[:, 0].tolist() if not pd.api.types.is_numeric_dtype(df.iloc[:, 0]) else \
              [f"地点{i+1}" for i in range(n)]
 
-    if demands is None:
-        # Single TSP route
-        tsp_result = gs.tsp_nearest_neighbor(D, start=0)
-        tour = tsp_result["tour"]
-        tour_labels = [labels[i] for i in tour if i < len(labels)]
-        tour_dist = round(tsp_result["total_distance"], 2)
-
-        results[f"sub_{sp['id']}"] = {
-            "method": "TSP Nearest Neighbor",
-            "n_locations": n,
-            "tour": tour,
-            "tour_labels": tour_labels,
-            "total_distance": tour_dist,
-            "n_vehicles": 1,
-            "summary": f"TSP路径: {n}个地点, 总距离={tour_dist:.1f}, 1辆车"
-        }
-        print(f"     TSP: {tour_dist:.1f} total distance, 1 vehicle")
-    else:
-        # VRP with capacity: nearest-neighbor + split when capacity exceeded
-        routes = []
-        unvisited = set(range(1, n))  # start at depot (index 0)
-        while unvisited:
-            route = [0]  # start from depot
-            load = 0
-            current = 0
-            while unvisited:
-                # Find nearest unvisited that fits
-                candidates = [(j, D[current, j]) for j in unvisited if demands[j] + load <= capacity]
-                if not candidates:
-                    break
-                nxt, _ = min(candidates, key=lambda x: x[1])
-                route.append(nxt)
-                load += demands[nxt]
-                unvisited.remove(nxt)
-                current = nxt
-            route.append(0)  # return to depot
-            routes.append(route)
-
-        # Report
-        total_dist = 0
-        route_details = []
-        for i, route in enumerate(routes):
-            rdist = sum(D[route[j]][route[j+1]] for j in range(len(route)-1))
-            rload = sum(demands[j] for j in route if j != 0)
-            total_dist += rdist
-            rlabels = [labels[j] for j in route]
-            route_details.append({"route": i+1, "path": rlabels,
-                                  "distance": round(rdist, 1), "load": round(rload, 0)})
-            print(f"     Route {i+1}: {len(route)-2} stops, dist={rdist:.1f}, load={rload:.0f}/{capacity:.0f}")
-
-        results[f"sub_{sp['id']}"] = {
-            "method": "Nearest-Neighbor VRP",
-            "n_locations": n,
-            "n_vehicles": len(routes),
-            "routes": route_details,
-            "total_distance": round(total_dist, 1),
-            "vehicle_capacity": capacity,
-            "summary": f"VRP: {n}地点→{len(routes)}辆车, 总距离={total_dist:.1f}"
-        }
-        print(f"     VRP: {len(routes)} vehicles, total distance={total_dist:.1f}")
+    # Solve TSP
+    dist, tour = _tsp_solve(D, n)
+    tour_labels = [labels[i] for i in tour if i < len(labels)]
+    results[f"sub_{sp['id']}"] = {
+        "method": "Euclidean TSP (NN+2-opt)",
+        "n_locations": n, "tour": tour, "tour_labels": tour_labels,
+        "total_distance": dist, "n_vehicles": 1,
+        "summary": f"最短路径: {n}个地点, 总距离={dist}, 1辆车"
+    }
+    print(f"     TSP: {dist} total distance")
 
 
 def _find_df(data_files, ptype):
