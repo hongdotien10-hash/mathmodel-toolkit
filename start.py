@@ -198,10 +198,10 @@ def main():
                 print(f"  [Phase A] Deep TSP solving ({n} locations, 10min budget)...")
                 deep_result = deep_solve_tsp(sparse, n, fig_dir, sp_id, time_budget=600)
 
-                # Phase B: Full 18-round AI deep thinking
+                # Phase B: 30-API deep thinking per question
                 ai_insights = {}
                 if api_key:
-                    print(f"  [Phase B] 18-round AI deep thinking...")
+                    print(f"  [Phase B] 30-API deep analysis pipeline...")
                     try:
                         from mathmodel.pipeline.deep_thinker import DeepThinker
                         thinker = DeepThinker(api_key=api_key)
@@ -212,11 +212,10 @@ def main():
                             "n_locations": n,
                             "all_methods": deep_result["all_ranked"],
                         }
-                        ai_insights = thinker.think_deep(
+                        ai_insights = thinker.think_one_question(
                             sp, problem_text, data_profiles, result_preview, fig_dir)
                     except Exception as e:
-                        print(f"  AI thinking error: {e}")
-                        import traceback; traceback.print_exc()
+                        print(f"  AI error: {e}")
 
                 all_results[f"sub_{sp_id}"] = {
                     "method": "Floyd-Warshall + TSP(NN+2-opt+SA)",
@@ -462,6 +461,29 @@ def main():
             print(f"  Abstract: {len(ai_content.get('abstract',''))} chars")
         except Exception as e:
             print(f"  AI writing failed: {e}")
+
+    # --- Paper-level AI analysis (20 API calls) ---
+    paper_insights = {}
+    if api_key:
+        print_section("Phase 7.5: Cross-Question Paper-Level Analysis")
+        try:
+            from mathmodel.pipeline.deep_thinker import DeepThinker
+            paper_thinker = DeepThinker(api_key=api_key)
+            paper_insights = paper_thinker.think_paper_level(
+                sub_problems, all_results, problem_text, data_profiles)
+            # Inject into ai_content
+            if paper_insights.get("abstract_final"):
+                ai_content["abstract"] = paper_insights["abstract_final"]
+            if paper_insights.get("conclusion_final"):
+                ai_content["conclusion"] = paper_insights.get("conclusion_final", "")
+            if paper_insights.get("cross_comparison"):
+                ai_content["cross_analysis"] = paper_insights.get("cross_comparison", "")
+            print(f"  Paper AI: {paper_thinker.total_calls} calls, ¥{paper_thinker.total_cost:.4f}")
+            pq = paper_insights.get("paper_quality", {})
+            if isinstance(pq, dict):
+                print(f"  Estimated prize: {pq.get('estimated_prize', '?')}")
+        except Exception as e:
+            print(f"  Paper AI: {e}")
 
     _pause("All results ready. Generate paper now?")
 
