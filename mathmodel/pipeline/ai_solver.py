@@ -90,18 +90,26 @@ class AISolver:
 
         system_prompt = """你是数学建模竞赛的Python求解专家。
 你需要为每个子问题编写完整的、可直接运行的Python代码。
-代码要求：
+
+## 可用的Python库（只能使用这些）:
+- numpy, scipy, pandas, matplotlib, sklearn, pathlib
+- 标准库: json, re, math, random, collections, itertools, time
+- 不要使用: networkx, cvxpy, ortools, torch, tensorflow 等未安装的库
+- 距离矩阵计算用numpy手写，图算法用numpy手写，不要依赖networkx
+
+## 代码要求:
 1. 读取数据(从 problems/sample/ 目录)
 2. 数据预处理
 3. 建立并求解模型
 4. 输出具体数值结果(print出来)
-5. 生成论文级图表(保存到指定路径)
+5. 生成论文级图表(保存到指定路径, 用matplotlib, 300dpi)
 
-代码必须是完整可执行的。不要省略，不要写"这里省略"。
+代码必须是完整可执行的。不要省略，不要写\"这里省略\"。
 每段代码写好注释说明这一步在做什么。
 如果涉及优化，要输出目标函数值和决策变量值。
 如果涉及预测，要输出预测值和误差指标。
-如果涉及路径/图论，要输出路径和总距离。"""
+如果涉及路径/图论，用numpy手写算法，输出路径和总距离。
+图表中文字体: plt.rcParams['font.sans-serif'] = ['SimHei','Microsoft YaHei','DejaVu Sans']"""
 
         code = ""
         result_text = ""
@@ -202,6 +210,11 @@ class AISolver:
                     f"问题: {problem_desc}\n执行结果:\n{result_text[:3000]}",
                     max_tok=1000)
                 time.sleep(0.2)
+
+                # Skip review if execution failed with import error — auto-retry with fix
+                if "ModuleNotFoundError" in result_text or "ImportError" in result_text:
+                    print(f"  [AI-REVIEW] Import error detected — auto-retrying with numpy-only approach")
+                    continue  # skip review, go straight to next round with fixed prompt
 
                 if analysis.strip().startswith("OK") or "结果正确" in analysis:
                     print(f"  [AI-REVIEW] Result accepted: {analysis[:200]}")

@@ -183,7 +183,9 @@ def main():
             print(f"\n  {'='*40}")
             print(f"  Q{sp_id}: Deep Multi-Round Analysis + Solve")
             print(f"  {'='*40}")
-            df = _find_df(data_files, ptype)
+            # Q1 uses first data file, Q2+ use second data file
+            file_idx = 0 if sp_id <= 1 else 1
+            df = _find_df(data_files, ptype, prefer_index=file_idx)
             if df is not None:
                 from mathmodel.pipeline.deep_solve import deep_solve_tsp
                 numeric = df.select_dtypes(include=np.number)
@@ -983,11 +985,14 @@ def _make_routing_figure(val, key, fig_dir):
     print(f"  [{key}] Route figure: {total_dist}km")
 
 
-def _find_df(data_files, ptype):
-    for k, v in data_files.items():
-        if k.endswith("_norm"): continue
-        if v.select_dtypes(include=np.number).shape[1] >= 2: return v
-    return list(data_files.values())[0] if data_files else None
+def _find_df(data_files, ptype, prefer_index=0):
+    """选择数据文件。prefer_index: 0=第一个, 1=第二个"""
+    files = [(k, v) for k, v in data_files.items()
+             if not k.endswith("_norm") and v.select_dtypes(include=np.number).shape[1] >= 2]
+    if not files:
+        return list(data_files.values())[0] if data_files else None
+    idx = min(prefer_index, len(files) - 1)
+    return files[idx][1]
 
 
 def _serialize(obj):
