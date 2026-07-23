@@ -257,10 +257,13 @@ def main():
                             "figure_paths": fig_paths,
                         }
                         total_tok = ai.total_in_tokens + ai.total_out_tokens
-                        print(f"  AI done: {ai.calls} calls, {total_tok//1000}K tokens ({ai.total_in_tokens//1000}K in + {ai.total_out_tokens//1000}K out)")
+                        ai_calls = ai.calls
+                        ai_tokens = total_tok
+                        print(f"  AI done: {ai_calls} calls, {ai_tokens//1000}K tokens")
                     except Exception as e:
                         print(f"  AI error: {e}")
                         import traceback; traceback.print_exc()
+                        ai_calls = 0; ai_tokens = 0
 
                 all_results[f"sub_{sp_id}"] = {
                     "method": "Floyd-Warshall + TSP(NN+2-opt+SA)",
@@ -270,18 +273,10 @@ def main():
                     "n_locations": n, "n_vehicles": 1,
                     "all_methods": deep_result["all_ranked"],
                     "total_time_s": deep_result["total_time"],
-                    "ai_analysis": ai_insights.get("result_final", ""),
-                    "ai_model_debate": ai_insights.get("model_decision", ""),
-                    "ai_figures": [ai_insights.get(f"figure_{i+1}", {}) for i in range(3)],
-                    "ai_quality": ai_insights.get("quality_scores", {}).get("overall_score", 0),
-                    "ai_judge_comment": ai_insights.get("judge_comment", ""),
                     "summary": (f"最短配送回路总距离: {deep_result['best']['distance']}km, "
-                               f"覆盖全部{n}个地点。"
-                               f"{ai_insights.get('result_final', '')[:300]}")
+                               f"覆盖全部{n}个地点。")
                 }
-                print(f"     Result: {deep_result['best']['distance']}km")
-                print(f"     AI calls: {thinker.total_calls if api_key else 0}, "
-                      f"cost: ¥{thinker.total_cost if api_key else 0:.4f}")
+                print(f"     Result: {deep_result['best']['distance']}km, AI: {ai_calls} calls, {ai_tokens//1000}K tokens")
             continue
         elif f"sub_{sp_id}" in contest_results:
             best = contest_results[f"sub_{sp_id}"]

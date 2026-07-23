@@ -98,7 +98,9 @@ class AISolver:
 - 距离矩阵计算用numpy手写，图算法用numpy手写，不要依赖networkx
 
 ## 代码要求:
-1. 读取数据(从 problems/sample/ 目录)
+1. 读取数据: 数据文件是.xlsx格式, 用 pd.read_excel() 读取, 不要用read_csv
+   文件路径: problems/sample/附件1.xlsx 或 problems/sample/附件2.xlsx
+   .xlsx文件第一行和第一列是表头/序号, 真实距离数据从(1,1)开始
 2. 数据预处理
 3. 建立并求解模型
 4. 输出具体数值结果(print出来)
@@ -184,7 +186,8 @@ class AISolver:
                 result = subprocess.run(
                     [sys.executable, str(code_path)],
                     capture_output=True, text=True, timeout=120,
-                    cwd=str(Path(__file__).parent.parent.parent)
+                    cwd=str(Path(__file__).parent.parent.parent),
+                    encoding='utf-8', errors='replace'
                 )
                 result_text = result.stdout[-5000:] if result.stdout else ""
                 if result.stderr:
@@ -276,7 +279,8 @@ class AISolver:
             result = subprocess.run(
                 [sys.executable, str(code_path)],
                 capture_output=True, text=True, timeout=60,
-                cwd=str(Path(__file__).parent.parent.parent)
+                cwd=str(Path(__file__).parent.parent.parent),
+                encoding='utf-8', errors='replace'
             )
             fig_path = Path(fig_dir) / f"sub_{sp_id}_plot.pdf"
             if fig_path.exists():
@@ -294,8 +298,9 @@ class AISolver:
                     code2 = code2.split("```python")[1].split("```")[0].strip()
                 code_path.write_text(code2, encoding="utf-8")
                 subprocess.run([sys.executable, str(code_path)],
-                              capture_output=True, timeout=60,
-                              cwd=str(Path(__file__).parent.parent.parent))
+                              capture_output=True, text=True, timeout=60,
+                              cwd=str(Path(__file__).parent.parent.parent),
+                              encoding='utf-8', errors='replace')
                 if fig_path.exists():
                     return str(fig_path)
         except Exception as e:
