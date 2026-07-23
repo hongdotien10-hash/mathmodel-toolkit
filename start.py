@@ -70,67 +70,91 @@ def main():
     all_results = {}
     sub_count = min(max_questions, 4)  # AI will determine actual count later
 
+    # AI-driven solver selection: let AI analyze data and pick the right solver
     for q in range(1, sub_count + 1):
-        print(f"\n  Q{q}: Running deterministic solver...")
-        # Try each solver type, pick the one that fits the data
+        print(f"\n  Q{q}: AI selecting best solver for this data...")
         df = None
         for k, v in data_files.items():
             if not k.endswith("_norm") and v.select_dtypes(include=np.number).shape[1] >= 2:
                 df = v; break
         if df is None:
-            all_results[f"sub_{q}"] = {"summary": "No numeric data found", "status": "skipped"}
+            all_results[f"sub_{q}"] = {"summary": "No numeric data found"}
             continue
 
         numeric = df.select_dtypes(include=np.number)
         nan_ratio = numeric.isnull().sum().sum() / max(numeric.size, 1)
+        n_rows, n_cols = numeric.shape
 
-        # Auto-detect: sparse matrix → routing
-        if nan_ratio > 0.15 and numeric.shape[1] >= numeric.shape[0] - 2:
+        # Build data profile for AI decision
+        data_profile = f"Rows={n_rows}, Cols={n_cols}, NaN={nan_ratio:.1%}, "
+        data_profile += f"Columns={list(numeric.columns)[:8]}, "
+        data_profile += f"Sample:\n{numeric.head(3).to_string()}"
+
+        solver_choice = "routing"  # default
+        if api_key:
+            # AI decides which solver to use
+            try:
+                from mathmodel.pipeline.universal_solver import UniversalSolver
+                us = UniversalSolver(api_key=api_key)
+                choice = us._call(
+                    "分析这个数据表格的特征,从以下选择最合适的求解器: "
+                    "routing(稀疏距离矩阵→TSP/VRP), evaluation(多指标→TOPSIS/AHP), "
+                    "prediction(时序→GM(1,1)/ARIMA), optimization(成本收益→背包/IP), "
+                    "statistics(多变量→相关分析/PCA), clustering(样本→KMeans)。"
+                    "只回复一个英文单词。",
+                    f"数据:\n{data_profile}", max_tok=50)
+                solver_choice = choice.strip().lower()
+                print(f"  AI chose: {solver_choice}")
+            except: pass
+
+        # Execute the chosen solver
+        if "routing" in solver_choice and nan_ratio > 0.1:
             first_col = numeric.iloc[:, 0].dropna().tolist()
             if len(first_col) >= 3 and first_col[:3] == [1.0, 2.0, 3.0]:
                 sparse = numeric.iloc[:, 1:].values.astype(float)
-            else:
-                sparse = numeric.values.astype(float)
+            else: sparse = numeric.values.astype(float)
             result = solve_routing(sparse)
             all_results[f"sub_{q}"] = {
-                "total_distance": result["distance"],
-                "tour": result["tour"],
-                "tour_labels": [str(t+1) for t in result["tour"]],
-                "n_locations": result["n_locations"],
-                "method": result["method"],
-                "summary": f"最短配送回路: {result['distance']}km, {result['n_locations']}个地点"
+                "total_distance": result["distance"], "tour": result["tour"],
+                "n_locations": result["n_locations"], "method": result["method"],
+                "summary": f"TSP: {result['distance']}km, {result['n_locations']}地点"
             }
-            print(f"  Q{q}: TSP solved — {result['distance']}km")
-        # Dense matrix with many columns → evaluation
-        elif numeric.shape[1] >= 3 and nan_ratio < 0.1:
+            print(f"  Q{q}: TSP — {result['distance']}km")
+        elif "evaluation" in solver_choice or ("tops" in solver_choice and n_cols >= 3):
             try:
-                matrix = numeric.values.astype(float)
-                result = solve_topsis(matrix)
+                result = solve_topsis(numeric.values.astype(float))
+                labels = df.iloc[:,0].tolist() if not pd.api.types.is_numeric_dtype(df.iloc[:,0]) else [f"Item{i+1}" for i in range(n_rows)]
                 all_results[f"sub_{q}"] = {
                     "scores": result["scores"], "rank": result["rank"],
-                    "weights": result["weights"],
-                    "labels": df.iloc[:, 0].tolist() if not pd.api.types.is_numeric_dtype(df.iloc[:, 0]) else [f"Item{i+1}" for i in range(len(df))],
-                    "summary": f"TOPSIS综合评价完成, {len(result['scores'])}个方案"
+                    "weights": result["weights"], "labels": labels,
+                    "summary": f"TOPSIS: {n_rows}方案×{n_cols}指标"
                 }
-                print(f"  Q{q}: TOPSIS solved")
-            except Exception as e:
-                all_results[f"sub_{q}"] = {"summary": f"TOPSIS failed: {e}"}
-        # Time series → grey forecast
-        elif numeric.shape[1] <= 2 and numeric.shape[0] >= 4:
+                print(f"  Q{q}: TOPSIS done")
+            except Exception as e: all_results[f"sub_{q}"] = {"summary": f"Eval failed: {e}"}
+        elif "prediction" in solver_choice and n_rows >= 4:
             try:
-                data = numeric.iloc[:, 0].dropna().tolist()
+                data = numeric.iloc[:,0].dropna().tolist()
                 result = solve_grey_forecast(data, steps=3)
                 all_results[f"sub_{q}"] = {
                     "forecast": [round(v,2) for v in result["forecast"]],
-                    "fitted": [round(v,2) for v in result["fitted"]],
                     "mape": result["mape"], "grade": result["grade"],
-                    "summary": f"GM(1,1)预测: MAPE={result['mape']:.2f}%, 预测值={[round(v,1) for v in result['forecast']]}"
+                    "summary": f"GM(1,1): MAPE={result['mape']:.2f}%"
                 }
-                print(f"  Q{q}: GM(1,1) solved — MAPE={result['mape']:.2f}%")
-            except Exception as e:
-                all_results[f"sub_{q}"] = {"summary": f"Forecast failed: {e}"}
+                print(f"  Q{q}: GM(1,1) — MAPE={result['mape']:.2f}%")
+            except Exception as e: all_results[f"sub_{q}"] = {"summary": f"Pred failed: {e}"}
+        elif "optimization" in solver_choice or ("knapsack" in solver_choice and n_cols >= 2):
+            try:
+                costs = numeric.iloc[:,1].values.astype(float).tolist()
+                benefits = numeric.iloc[:,2].values.astype(float).tolist() if n_cols>2 else numeric.iloc[:,0].tolist()
+                result = solve_knapsack(costs, benefits)
+                all_results[f"sub_{q}"] = {"selection": result["selection"],
+                    "total_cost": result["total_cost"], "total_benefit": result["total_benefit"],
+                    "summary": f"Knapsack: {len(result['selection'])} selected"}
+                print(f"  Q{q}: Knapsack — {len(result['selection'])} items")
+            except Exception as e: all_results[f"sub_{q}"] = {"summary": f"Opt failed: {e}"}
         else:
-            all_results[f"sub_{q}"] = {"summary": f"Data format not recognized", "status": "unknown"}
+            all_results[f"sub_{q}"] = {"summary": f"AI chose '{solver_choice}' but could not execute", "status": "unknown"}
+            print(f"  Q{q}: Unknown solver '{solver_choice}'")
 
     # === Phase 2: Skills pipeline (5M token AI) ===
     ai_content = {}
