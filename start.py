@@ -95,14 +95,18 @@ def main():
                     problem_text = '\n\n'.join(p.extract_text() or "" for p in pdf.pages)
             except: problem_text = f"PDF file: {f.name}"
         elif s in ('.xlsx', '.xls'):
-            df = pd.read_excel(f, nrows=500) if f.stat().st_size > 5e6 else pd.read_excel(f)
+            df = pd.read_excel(f)
             data_files[f.name] = df; file_list.append(f.name)
+            print(f"  [data] {f.name} {df.shape}")
         elif s == '.csv':
-            df = pd.read_csv(f, nrows=500) if f.stat().st_size > 5e6 else pd.read_csv(f)
+            df = pd.read_csv(f, low_memory=True)
             data_files[f.name] = df; file_list.append(f.name)
-    print(f"  Files: {file_list}\n  Problem: {len(problem_text)} chars\n")
+            print(f"  [data] {f.name} {df.shape}")
+    print(f"  Files: {file_list}\n  Problem text: {len(problem_text)} chars\n")
 
-    if not problem_text: print("ERROR: No problem text"); sys.exit(1)
+    if not problem_text:
+        print("  WARNING: No problem text found (PDF/TXT). Will analyze data only.")
+        problem_text = f"数据分析任务。数据文件: {file_list}。请分析数据结构，识别变量关系，给出统计描述和有意义的可视化。"
 
     # Build complete context for AI
     all_data_desc = ""
