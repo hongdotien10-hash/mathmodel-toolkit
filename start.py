@@ -180,7 +180,31 @@ def main():
         sp_text = sp.get("title", "") + sp.get("full_text", "")
 
         if is_routing_sp:
-            print(f"  Q{sp_id}: Optimization detected, using deep solver...")
+            print(f"  Q{sp_id}: Optimization -> deep solver...")
+            df = _find_df(data_files, ptype)
+            if df is not None:
+                from mathmodel.pipeline.deep_solve import deep_solve_tsp
+                numeric = df.select_dtypes(include=np.number)
+                # Detect ID column (1,2,3... sequential) and skip it
+                first_col = numeric.iloc[:, 0].dropna().tolist()
+                if len(first_col) >= 3 and first_col[:3] == [1.0, 2.0, 3.0]:
+                    sparse = numeric.iloc[:, 1:].values.astype(float)
+                else:
+                    sparse = numeric.values.astype(float)
+                n = sparse.shape[0]
+                deep_result = deep_solve_tsp(sparse, n, fig_dir, sp_id, time_budget=600)
+                all_results[f"sub_{sp_id}"] = {
+                    "method": "Floyd-Warshall + TSP(NN+2-opt+SA)",
+                    "total_distance": deep_result["best"]["distance"],
+                    "tour": deep_result["best"]["tour"],
+                    "tour_labels": [str(t+1) for t in deep_result["best"]["tour"]],
+                    "n_locations": n, "n_vehicles": 1,
+                    "all_methods": deep_result["all_ranked"],
+                    "total_time_s": deep_result["total_time"],
+                    "summary": f"最短配送回路总距离: {deep_result['best']['distance']}km, 覆盖全部{n}个地点。"
+                }
+                print(f"     DeepTSP: {deep_result['best']['distance']} ({deep_result['total_time']:.0f}s)")
+            continue
         elif f"sub_{sp_id}" in contest_results:
             best = contest_results[f"sub_{sp_id}"]
             winner = best.get("winner", "")
@@ -224,32 +248,7 @@ def main():
                     "mape": round(pred["mape"],2), "grade": pred["grade"]}
                 print(f"  Q{sp_id}: GM(1,1) MAPE={pred['mape']:.2f}%")
         elif ptype == "优化" and numeric.shape[1] >= 2:
-            # Detect routing problems (VRP/TSP/CVRP) vs knapsack
-            sp_text = sp.get("title", "") + sp.get("full_text", "")
-            is_routing = any(kw in sp_text for kw in ["路径", "配送", "路线", "车辆", "route", "VRP", "TSP", "CVRP", "选址"]) and \
-                        any(kw in str(df.columns).lower() for kw in ["x", "y", "坐标", "经度", "纬度", "lat", "lon", "lng", "longitude", "latitude"])
-            if is_routing:
-                # Deep solving: 10min+ thorough TSP/VRP
-                from mathmodel.pipeline.deep_solve import deep_solve_tsp
-                sparse = df.select_dtypes(include=np.number).values.astype(float)
-                n = min(sparse.shape[0], min(sparse.shape[1], 100))
-                deep_result = deep_solve_tsp(sparse, n, fig_dir, sp_id, time_budget=600)
-                all_results[f"sub_{sp_id}"] = {
-                    "method": f"Floyd-Warshall + TSP(NN+2-opt+SA)",
-                    "total_distance": deep_result["best"]["distance"],
-                    "tour": deep_result["best"]["tour"],
-                    "tour_labels": [str(t+1) for t in deep_result["best"]["tour"]],
-                    "n_locations": n,
-                    "n_vehicles": 1,
-                    "all_methods": deep_result["all_ranked"],
-                    "total_time_s": deep_result["total_time"],
-                    "summary": f"最短配送回路总距离: {deep_result['best']['distance']}km, "
-                              f"覆盖全部{n}个地点。采用{deep_result['best']['method']}求解，"
-                              f"耗时{deep_result['total_time']:.0f}秒。"
-                }
-                print(f"     DeepTSP: {deep_result['best']['distance']} ({deep_result['total_time']:.0f}s)")
-                continue
-
+            # Only reached for non-routing optimization (e.g. 0-1 knapsack)
             costs = numeric.iloc[:,1].values.astype(float).tolist()
             benefits = numeric.iloc[:,2].values.astype(float).tolist() if numeric.shape[1] > 2 else numeric.iloc[:,0].tolist()
             budget = sum(costs)*0.6
@@ -262,7 +261,7 @@ def main():
                 "total_cost": round(cost_total,1), "total_population": round(benefit_total,1),
                 "budget": round(budget,1), "solution": [1 if i in sel else 0 for i in range(len(costs))],
                 "costs": costs, "benefits": benefits, "labels_all": labels}
-            print(f"  Q{sp_id}: Optimization done ({len(sel)} selected)")
+            print(f"  Q{sp_id}: Knapsack done ({len(sel)} selected)")
 
     # --- Save results immediately after solving ---
     try:
