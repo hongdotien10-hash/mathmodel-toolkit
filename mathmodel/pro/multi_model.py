@@ -134,13 +134,14 @@ class ModelContest:
 
         numeric = df.select_dtypes(include=np.number)
 
-        # Detect routing problem (VRP/TSP)
+        # Detect routing problem (VRP/TSP) — keyword + data check
         sp_text = sp.get("title", "") + sp.get("full_text", "")
-        is_routing = any(kw in sp_text for kw in ["路径", "配送", "路线", "车辆", "route", "VRP", "TSP", "CVRP", "选址"]) and \
-                    ptype == "优化" and \
-                    any(kw in str(df.columns).lower() for kw in ["x", "y", "坐标", "经度", "纬度", "lat", "lon"])
+        has_routing_kw = any(kw in sp_text for kw in ["路径", "配送", "路线", "车辆", "route", "VRP", "TSP", "CVRP", "选址"])
+        has_coord_cols = any(kw in str(df.columns).lower() for kw in ["x", "y", "坐标", "经度", "纬度", "lat", "lon"])
+        has_sparse_matrix = numeric.isnull().sum().sum() > numeric.size * 0.2  # >20% NaN = sparse matrix
+        is_routing = has_routing_kw and ptype == "优化" and (has_coord_cols or has_sparse_matrix)
         if is_routing:
-            return self._run_routing(name, numeric, df, sp)
+            return self._run_routing_variant(name, numeric, df, sp)
 
         if "TOPSIS" in name and ptype == "评价":
             return self._run_topsis(numeric, df)
@@ -385,6 +386,80 @@ class ModelContest:
         pca.fit(X)
         explained = float(np.cumsum(pca.explained_variance_ratio_)[:2][-1])
         return {"metric_name": "累积方差(前2)", "metric_value": round(explained, 4)}
+
+    # ---- Routing variants: different algorithms per candidate ----
+    def _run_routing_variant(self, method_name: str, numeric: "pd.DataFrame", df: "pd.DataFrame",
+                             sp: dict) -> dict:
+        """路由竞赛: 每个候选模型用不同的算法变体"""
+        import re
+        from mathmodel.models.graph import GraphSolver
+        gs = GraphSolver()
+        n = numeric.shape[0]
+        sp_text = sp.get("title", "") + sp.get("full_text", "")
+
+        # Build distance matrix
+        nan_ratio = numeric.isnull().sum().sum() / max(n * numeric.shape[1], 1)
+        if nan_ratio > 0.3:
+            INF = 1e9; vals = numeric.values.astype(float)
+            D = np.full((n, n), INF)
+            for i in range(n):
+                for j in range(min(n, vals.shape[1])):
+                    v = vals[i,j]
+                    if not np.isnan(v) and v > 0: D[i,j] = v
+                    elif i == j: D[i,j] = 0
+            for i in range(n):
+                for j in range(n):
+                    if D[i,j] < INF and D[j,i] >= INF: D[j,i] = D[i,j]
+            for k in range(n):
+                for i in range(n):
+                    if D[i,k] >= INF: continue
+                    for j in range(n):
+                        if D[i,k] + D[k,j] < D[i,j]: D[i,j] = D[i,k] + D[k,j]
+        else:
+            D = np.zeros((n,n))
+            coords = numeric.values.astype(float)[:,:2]
+            for i in range(n):
+                for j in range(n):
+                    D[i,j] = np.sqrt(np.sum((coords[i]-coords[j])**2))
+
+        # Each candidate uses a DIFFERENT algorithm
+        if "整数规划" in method_name or "IP" in method_name:
+            # Single-start NN only (fastest, least optimized)
+            r = gs.tsp_nearest_neighbor(D, start=0)
+            return {"metric_name": "总距离", "metric_value": round(r["total_distance"], 1),
+                    "tour": r["tour"], "n_vehicles": 1, "method": "NN(single start)"}
+
+        elif "贪心" in method_name or "Greedy" in method_name:
+            # Multi-start NN (14 starts pick best)
+            best_d, best_t = float('inf'), None
+            for s in range(min(n, 14)):
+                r = gs.tsp_nearest_neighbor(D, start=s)
+                if r["total_distance"] < best_d:
+                    best_d = r["total_distance"]; best_t = r["tour"]
+            return {"metric_name": "总距离", "metric_value": round(best_d, 1),
+                    "tour": best_t, "n_vehicles": 1, "method": "NN(multi start)"}
+
+        else:  # "线性松弛+修复" or any other → NN + 2-opt
+            best_d, best_t = float('inf'), None
+            for s in range(min(n, 14)):
+                r = gs.tsp_nearest_neighbor(D, start=s)
+                if r["total_distance"] < best_d:
+                    best_d = r["total_distance"]; best_t = r["tour"]
+            # 2-opt
+            improved = True; iters = 0
+            while improved and iters < 50:
+                improved = False; iters += 1
+                for i in range(1, n):
+                    for j in range(i+2, n+1):
+                        old = D[best_t[i-1]][best_t[i]] + D[best_t[j-1]][best_t[j]]
+                        new = D[best_t[i-1]][best_t[j-1]] + D[best_t[i]][best_t[j]]
+                        if new < old - 1e-10:
+                            best_t[i:j] = reversed(best_t[i:j])
+                            best_d = best_d - old + new
+                            improved = True
+            return {"metric_name": "总距离", "metric_value": round(best_d, 1),
+                    "tour": best_t, "n_vehicles": 1, "method": "NN+2-opt"}
+
 
     # ---- Routing (VRP/TSP) ----
     def _run_routing(self, method_name: str, numeric: "pd.DataFrame", df: "pd.DataFrame",
