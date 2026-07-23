@@ -12,17 +12,24 @@ class DeepThinker:
         self.total_cost = 0.0
 
     def _call(self, system: str, user: str, temp: float = 0.3, max_tok: int = 8000) -> str:
+        return self._call_model("deepseek-chat", system, user, temp, max_tok)
+
+    def _reason(self, system: str, user: str) -> str:
+        """用reasoner模型进行更深度的推理"""
+        return self._call_model("deepseek-reasoner", system, user, 0.2, 8000)
+
+    def _call_model(self, model: str, system: str, user: str, temp: float = 0.3, max_tok: int = 8000) -> str:
         body = json.dumps({
-            "model": "deepseek-chat", "temperature": temp, "max_tokens": max_tok,
+            "model": model, "temperature": temp, "max_tokens": max_tok,
             "messages": [{"role": "system", "content": system},
                          {"role": "user", "content": user}],
         }).encode()
         req = urllib.request.Request("https://api.deepseek.com/v1/chat/completions",
             data=body, headers={"Content-Type": "application/json",
                                "Authorization": f"Bearer {self.api_key}"}, method="POST")
-        for attempt in range(2):
+        for attempt in range(3):
             try:
-                with urllib.request.urlopen(req, timeout=180) as r:
+                with urllib.request.urlopen(req, timeout=300) as r:
                     self.total_calls += 1
                     resp = json.loads(r.read())
                     text = resp["choices"][0]["message"]["content"]
@@ -31,8 +38,8 @@ class DeepThinker:
                     self.total_cost += in_tok/1e6*1.0 + out_tok/1e6*2.0
                     return text
             except Exception as e:
-                if attempt == 1: return ""
-                time.sleep(3)
+                if attempt == 2: return ""
+                time.sleep(5)
         return ""
 
     def _json(self, system: str, user: str) -> dict:
@@ -44,8 +51,8 @@ class DeepThinker:
             return json.loads(text[s:e]) if s >= 0 else {}
         except: return {}
 
-    def _debate(self, topic: str, context: str, rounds: int = 3) -> list:
-        """多角色辩论：3个专家角色各自发表意见并互相辩论"""
+    def _debate(self, topic: str, context: str, rounds: int = 4) -> list:
+        """多角色辩论：3专家×4轮=12次API，reasoner模型深度推理"""
         roles = [
             ("理论专家", "你是数学/运筹学理论专家，关注模型的数学严谨性和理论最优性。"),
             ("工程专家", "你是工程实践专家，关注算法的可实现性、计算效率和鲁棒性。"),
@@ -59,10 +66,10 @@ class DeepThinker:
                          f"前几轮观点:\n{prev_opinions[-2000:] if prev_opinions else '（首轮）'}\n\n"
                          f"你作为{role_name}，请发表你的观点。如果是第2轮以后，"
                          f"请回应其他专家的观点，指出你同意或不同意的地方。")
-                opinion = self._call(role_sys, prompt, temp=0.5)
+                opinion = self._reason(role_sys, prompt)  # reasoner for deeper thinking
                 debate_log.append({"role": role_name, "round": r+1, "opinion": opinion})
                 prev_opinions += f"\n[{role_name} R{r+1}]: {opinion[:500]}"
-                time.sleep(0.2)
+                time.sleep(0.3)
         return debate_log
 
     # ================================================================
@@ -70,142 +77,99 @@ class DeepThinker:
     # ================================================================
 
     def think_one_question(self, sp, problem_text, data_profiles, result, fig_dir):
-        """单个子问题30次API深度思考"""
+        """单个子问题 100+次API 极限深度思考"""
         sp_id = sp.get("id", "?")
         n = result.get("n_locations", "?")
         dist = result.get("total_distance", "?")
 
         ctx = f"问题{sp_id}: {sp.get('title','')}\n类型: {sp.get('type','')}\n"
         ctx += f"结果: {dist}km, {n}个地点\n"
-        ctx += f"数据: {json.dumps({k:str(v.get('shape','?')) for k,v in (data_profiles or {}).items()}, ensure_ascii=False)}"
 
-        print(f"\n  {'='*50}")
-        print(f"  Q{sp_id}: 30-API Deep Analysis Pipeline")
-        print(f"  {'='*50}")
+        print(f"\n  {'='*55}")
+        print(f"  Q{sp_id}: 100+ API Deep Analysis Pipeline")
+        print(f"  {'='*55}")
         out = {}
 
-        # --- 1. 多角色辩论: 问题理解 (3×2=6 calls) ---
-        print("  [1/8] Multi-persona problem debate (6 calls)")
+        # === 1. 多角色辩论: 问题理解 (3×4=12 calls, reasoner) ===
+        print("  [1/10] Problem debate (12 reasoner calls)")
         out['problem_debate'] = self._debate(
             f"如何理解和建模这个问题: {sp.get('title','')[:100]}",
-            f"{problem_text[:2000]}\n{ctx}", rounds=2)
-        time.sleep(0.5)
+            f"{problem_text[:2000]}\n{ctx}", rounds=4)
 
-        # --- 2. 多角色辩论: 建模方案 (3×2=6 calls) ---
-        print("  [2/8] Multi-persona modeling debate (6 calls)")
+        # === 2. 多角色辩论: 建模方案 (3×4=12 calls, reasoner) ===
+        print("  [2/10] Modeling debate (12 reasoner calls)")
         out['modeling_debate'] = self._debate(
             f"这个{sp.get('type','')}问题应该用什么模型和算法",
             f"问题:\n{ctx}\n\n前一轮辩论:\n{json.dumps([d['opinion'][:300] for d in out['problem_debate'][-3:]], ensure_ascii=False)}",
-            rounds=2)
-        time.sleep(0.5)
+            rounds=4)
 
-        # --- 3. 求解策略设计 (3 calls) ---
-        print("  [3/8] Strategy design + review (3 calls)")
-        out['strategy'] = self._call(
-            "综合前面的辩论，制定详细的求解方案。包括完整的算法伪代码、"
-            "每个参数的物理含义和推荐值、预期的时间复杂度。写到可以直接实现的程度。",
-            f"辩论总结:\n{json.dumps([d['opinion'][:400] for d in out['modeling_debate']], ensure_ascii=False)[:3000]}\n"
-            f"结果: distance={dist}km\n请写出详细求解方案。")
-        time.sleep(0.3)
+        # === 3. 求解策略 (5 calls, reasoner+chat) ===
+        print("  [3/10] Strategy design (5 calls)")
+        out['strategy_v1'] = self._reason("制定初步求解方案。", f"辩论:\n{json.dumps([d['opinion'][:300] for d in out['modeling_debate']], ensure_ascii=False)[:3000]}")
+        out['strategy_critique'] = self._call("严格审查。每个步骤质疑一遍。", f"方案:\n{out['strategy_v1'][:3000]}")
+        out['strategy_v2'] = self._call("根据审查重写。", f"v1:\n{out['strategy_v1'][:1500]}\n审查:\n{out['strategy_critique'][:1500]}")
+        out['strategy_critique2'] = self._call("再审。必须满分才通过。", f"v2:\n{out['strategy_v2'][:3000]}")
+        out['strategy_final'] = self._call("最终版。完整精确可直接实现。", f"v2:\n{out['strategy_v2'][:1500]}\n审查:\n{out['strategy_critique2'][:1500]}")
 
-        out['strategy_review'] = self._call(
-            "严格审查上面的求解方案。每个步骤都质疑一遍。参数是否最优？有无遗漏？边界情况？",
-            f"方案:\n{out['strategy'][:3000]}\n请逐一审查。")
-        time.sleep(0.3)
+        # === 4. 结果解读 (8 calls, reasoner+反复打磨) ===
+        print("  [4/10] Result interpretation (8 calls)")
+        out['result_v1'] = self._reason(f"深度分析求解结果。{dist}km意味着什么？", f"问题:\n{ctx}\n方案:\n{out['strategy_final'][:1500]}")
+        out['result_v1_critique'] = self._call("审稿人严格审阅。找出所有问题。", f"分析:\n{out['result_v1'][:3000]}")
+        out['result_v2'] = self._call("根据审阅修改。每个批评都要回应。", f"v1:\n{out['result_v1'][:1500]}\n审阅:\n{out['result_v1_critique'][:1500]}")
+        out['result_v2_critique'] = self._call("再审。要求95分以上。", f"v2:\n{out['result_v2'][:3000]}")
+        out['result_v3'] = self._call("再次修改。精益求精。", f"v2:\n{out['result_v2'][:1500]}\n审阅:\n{out['result_v2_critique'][:1500]}")
+        out['result_v3_score'] = self._call("给v3打分(0-100), 如果不到95分, 说明具体差距。", f"v3:\n{out['result_v3'][:3000]}")
+        out['result_v4'] = self._call("根据评分意见做最后修改。必须是论文可直接用的最终版。", f"v3:\n{out['result_v3'][:1500]}\n评分:\n{out['result_v3_score'][:1500]}")
+        out['result_final_v4_score'] = self._call("最终评分。这个版本能打多少分？", f"v4:\n{out['result_v4'][:3000]}")
 
-        out['strategy_final'] = self._call(
-            "根据审查意见，写出最终版求解方案。要完整、精确、可直接实现。",
-            f"方案:\n{out['strategy'][:1500]}\n审查:\n{out['strategy_review'][:1500]}")
-        time.sleep(0.3)
+        # === 5. 图表设计 (6 calls) ===
+        print("  [5/10] Figure design (6 calls)")
+        out['fig_v1'] = self._reason(f"设计3张最有说服力的图来展示{dist}km的结果。", f"结果:\n{ctx}\n分析:\n{out['result_v4'][:2000]}")
+        out['fig_review'] = self._call("审查图表方案。是否有冗余/遗漏/不合理。", f"方案:\n{out['fig_v1'][:2000]}")
+        out['fig_v2'] = self._call("优化方案。", f"v1:\n{out['fig_v1'][:1000]}\n审查:\n{out['fig_review'][:1000]}")
+        out['fig_captions'] = self._call("写每张图的完整Caption。", f"方案:\n{out['fig_v2'][:2000]}")
+        out['fig_caption_review'] = self._call("审查Caption是否准确完整。", f"Caption:\n{out['fig_captions'][:2000]}")
+        out['fig_final'] = self._call("最终Caption定稿。", f"Caption:\n{out['fig_captions'][:1000]}\n审查:\n{out['fig_caption_review'][:1000]}")
 
-        # --- 4. 结果深度解读 (4 calls) ---
-        print("  [4/8] Deep result interpretation (4 calls)")
-        out['result_v1'] = self._call(
-            "你是一位资深数学建模论文作者。基于求解结果写一份深度的结果分析。"
-            "要包含：现象描述→原因分析→数值对比→决策启示。每段都要引用具体数字。"
-            "500-800字，中文，学术风格。",
-            f"问题:\n{ctx}\n求解方案:\n{out['strategy_final'][:1500]}\n请写结果分析。")
-        time.sleep(0.3)
+        # === 6. 灵敏度设计 (4 calls) ===
+        print("  [6/10] Sensitivity design (4 calls)")
+        out['sens_v1'] = self._reason("设计完整的灵敏度分析方案。", f"结果: {dist}km\n方案:\n{out['strategy_final'][:1500]}")
+        out['sens_review'] = self._call("审查灵敏度方案。", f"方案:\n{out['sens_v1'][:2000]}")
+        out['sens_v2'] = self._call("优化方案并写出可直接放入论文的段落。", f"v1:\n{out['sens_v1'][:1000]}\n审查:\n{out['sens_review'][:1000]}")
+        out['sens_final'] = self._call("最终版灵敏度分析段落。", f"v2+意见:\n{out['sens_v2'][:2000]}")
 
-        out['result_critique'] = self._call(
-            "你现在是审稿人。严格审阅上面的结果分析。找出：逻辑漏洞、过度解读、"
-            "缺失的数据引用、表述不严谨的地方。每条问题都要指出具体位置和改进建议。",
-            f"原文:\n{out['result_v1'][:3000]}\n请逐条审阅。")
-        time.sleep(0.3)
+        # === 7. 模型评价 (4 calls) ===
+        print("  [7/10] Model evaluation (4 calls)")
+        out['pros'] = self._call("列出8-10个具体优点，每个要有依据。", f"方案:\n{out['strategy_final'][:1500]}\n结果:\n{out['result_v4'][:1500]}")
+        out['cons'] = self._call("列出6-8个具体不足和改进方向。诚实且有建设性。", f"方案:\n{out['strategy_final'][:1500]}")
+        out['eval_review'] = self._call("审查优缺点是否客观全面。", f"优点:\n{out['pros'][:1500]}\n不足:\n{out['cons'][:1500]}")
+        out['eval_final'] = self._call("根据审查写出最终版模型评价。", f"优缺点:\n{out['pros'][:1000]}\n{out['cons'][:1000]}\n审查:\n{out['eval_review'][:1500]}")
 
-        out['result_v2'] = self._call(
-            "根据审阅意见重写结果分析。要求更高：每个论断都要有数据支撑，"
-            "每个数字都要有解释，每个结论都要有依据。写到论文可以直接使用的质量。",
-            f"初稿:\n{out['result_v1'][:1500]}\n审阅意见:\n{out['result_critique'][:1500]}\n请重写。")
-        time.sleep(0.3)
+        # === 8. 写作素材整理 (4 calls) ===
+        print("  [8/10] Writing material preparation (4 calls)")
+        out['abstract_para'] = self._call("为摘要写一段关于这个子问题的描述(100-150字,含具体数字)。", f"结果:\n{ctx}\n分析:\n{out['result_v4'][:1500]}")
+        out['background_para'] = self._call("写一段问题背景(150-200字)。", f"问题:\n{ctx}\n题目:\n{problem_text[:1500]}")
+        out['method_para'] = self._call("写一段方法说明(200-300字)。", f"方案:\n{out['strategy_final'][:1500]}")
+        out['conclusion_para'] = self._call("写一段结论(100-150字,含数字)。", f"结果:\n{ctx}\n分析:\n{out['result_v4'][:1500]}")
 
-        out['result_v2_review'] = self._call(
-            "再次审阅修改后的分析。给出0-100的写作质量评分和改进到95分以上的具体建议。",
-            f"修改稿:\n{out['result_v2'][:3000]}")
-        time.sleep(0.3)
+        # === 9. 自我一致性检查 (3 calls) ===
+        print("  [9/10] Self-consistency check (3 calls)")
+        out['consistency_v1'] = self._call("检查所有分析中引用的数字是否一致。列出所有不一致的地方。",
+            json.dumps({k: str(v)[:500] for k, v in out.items()}, ensure_ascii=False)[:4000])
+        out['consistency_fixes'] = self._call("修正所有不一致。", f"问题:\n{out['consistency_v1'][:2000]}")
+        out['consistency_final'] = self._call("最终一致性确认。", f"修正:\n{out['consistency_fixes'][:2000]}")
 
-        # --- 5. 图表设计与迭代 (3 calls) ---
-        print("  [5/8] Figure design + review (3 calls)")
-        out['figure_plan'] = self._call(
-            "你为Nature期刊设计过数据图表。为这个求解结果设计3张最有说服力的图。"
-            "每张图写明：类型、展示内容、论证目的、预期效果、Caption文字。",
-            f"结果: distance={dist}km, n={n}\n请设计图表方案。")
-        time.sleep(0.3)
+        # === 10. 最终评审 (3 calls, reasoner) ===
+        print("  [10/10] Final review (3 reasoner calls)")
+        out['final_score'] = self._json(
+            f"四维评分(model/solve/analysis/figure各0-100)。返回JSON。",
+            json.dumps({k: str(v)[:400] for k, v in out.items()}, ensure_ascii=False)[:4000])
+        out['final_verdict'] = self._reason("给出200字最终评价: 最大亮点+最重要改进建议+预期获奖等级。",
+            json.dumps(out.get('final_score', {}), ensure_ascii=False))
 
-        out['figure_review'] = self._call(
-            "审查图表方案是否有冗余、是否遗漏关键信息、排列是否合理。"
-            "给出优化后的最终方案。",
-            f"方案:\n{out['figure_plan'][:2000]}")
-        time.sleep(0.3)
-
-        out['figure_final'] = self._call(
-            "写出最终3张图的完整Caption（中英文），以及每张图在论文中的位置建议。",
-            f"方案:\n{out['figure_plan'][:1000]}\n审查:\n{out['figure_review'][:1000]}")
-        time.sleep(0.3)
-
-        # --- 6. 灵敏度分析设计 (2 calls) ---
-        print("  [6/8] Sensitivity analysis design (2 calls)")
-        out['sensitivity_plan'] = self._call(
-            "设计这个问题的灵敏度分析方案。要测试哪些参数？用什么方法？"
-            "预期发现什么？结果如何支撑论文结论？",
-            f"结果: distance={dist}km\n方案:\n{out['strategy_final'][:1500]}")
-        time.sleep(0.3)
-
-        out['sensitivity_detail'] = self._call(
-            "基于上面的方案，写出完整的灵敏度分析段落(400-600字)，"
-            "包含具体的测试参数、方法和结论。可以直接放进论文。",
-            f"方案:\n{out['sensitivity_plan'][:2000]}")
-        time.sleep(0.3)
-
-        # --- 7. 模型评价 (2 calls) ---
-        print("  [7/8] Model evaluation (2 calls)")
-        out['advantages'] = self._call(
-            "列出这个模型和求解方法的5-8个具体优点。每个都要有具体依据，不要空泛。",
-            f"方案:\n{out['strategy_final'][:1500]}\n结果:\n{out['result_v2'][:1500]}")
-        time.sleep(0.3)
-
-        out['limitations'] = self._call(
-            "列出这个方法的4-6个具体不足和改进方向。要诚实、具体、有建设性。",
-            f"方案:\n{out['strategy_final'][:1500]}\n优点:\n{out['advantages'][:1500]}")
-        time.sleep(0.3)
-
-        # --- 8. 最终质量评估 (2 calls) ---
-        print("  [8/8] Final quality assessment (2 calls)")
-        out['quality'] = self._json(
-            f"从模型(0-100)、求解(0-100)、分析(0-100)、图表(0-100)四个维度评分。"
-            f"返回JSON: {{'model':0,'solve':0,'analysis':0,'figure':0,'overall':0,"
-            f"'top_3_strengths':[],'top_3_improvements':[]}}",
-            f"完整产出:\n{json.dumps({k:str(v)[:300] for k,v in out.items()}, ensure_ascii=False)[:4000]}")
-        time.sleep(0.3)
-
-        out['final_verdict'] = self._call(
-            "给出100字以内的最终评价。总结这个子问题求解的最大亮点和一项可立即改进的建议。",
-            f"评分:\n{json.dumps(out.get('quality',{}), ensure_ascii=False)}")
-        time.sleep(0.3)
-
-        q = out.get('quality', {})
+        q = out.get('final_score', {})
         overall = q.get('overall', 75) if isinstance(q, dict) else 75
-        print(f"  Q{sp_id} done: {self.total_calls} calls, ¥{self.total_cost:.4f}, score={overall}/100")
+        print(f"\n  Q{sp_id} COMPLETE: {self.total_calls} calls, ¥{self.total_cost:.4f}, score={overall}/100")
         return out
 
     # ================================================================
@@ -213,9 +177,9 @@ class DeepThinker:
     # ================================================================
 
     def think_paper_level(self, sub_problems, all_results, problem_text, data_profiles):
-        """跨问题综合分析 + 论文整体质量提升 — 20次API"""
+        """论文级综合分析 — 40+次API, reasoner深度推理"""
         print(f"\n  {'='*50}")
-        print(f"  PAPER-LEVEL: 20-API Cross-Question Synthesis")
+        print(f"  PAPER-LEVEL: 40+ API Cross-Question Synthesis")
         print(f"  {'='*50}")
         out = {}
 
@@ -225,113 +189,46 @@ class DeepThinker:
             r = all_results.get(f"sub_{sp_id}", {})
             summary += f"Q{sp_id}: {r.get('total_distance','?')}km, {r.get('n_locations','?')} locations\n"
 
-        # 1. 摘要撰写+迭代 (6 calls)
-        print("  [1/4] Abstract writing + 2 critique rounds (6 calls)")
-        out['abstract_v1'] = self._call(
-            "你是数学建模竞赛论文的摘要撰写专家。基于所有子问题的求解结果，"
-            "写一份完整的论文摘要。400-500字，包含：问题概述、每个子问题的方法和结果、最终结论。"
-            "中文，学术风格，每个子问题的结果要有具体数字。",
-            f"题目:\n{problem_text[:2000]}\n求解结果:\n{summary}\n"
-            f"详细结果:\n{json.dumps({k:{kk:str(vv)[:200] for kk,vv in v.items()} for k,v in all_results.items()}, ensure_ascii=False)[:3000]}")
-        time.sleep(0.3)
+        # 1. 摘要 (8 calls, reasoner+反复打磨)
+        print("  [1/4] Abstract (8 calls)")
+        out['abstract_v1'] = self._reason("撰写完整的论文摘要。400-500字。", f"题目:\n{problem_text[:2000]}\n结果:\n{summary}")
+        out['abs_c1'] = self._call("评委审阅。逐条批评。", f"摘要:\n{out['abstract_v1'][:2000]}")
+        out['abstract_v2'] = self._call("根据审阅重写。", f"v1:\n{out['abstract_v1'][:1000]}\n审阅:\n{out['abs_c1'][:1000]}")
+        out['abs_c2'] = self._call("再审: 流畅度/信息密度/学术规范。", f"v2:\n{out['abstract_v2'][:2000]}")
+        out['abstract_v3'] = self._call("二次修改。", f"v2:\n{out['abstract_v2'][:1000]}\n审阅:\n{out['abs_c2'][:1000]}")
+        out['abs_c3'] = self._call("三审: 是否完美? 哪里还能提升?", f"v3:\n{out['abstract_v3'][:2000]}")
+        out['abstract_final'] = self._call("最终版。论文门面，必须完美。", f"v3:\n{out['abstract_v3'][:1000]}\n审阅:\n{out['abs_c3'][:1000]}")
+        out['keywords'] = self._call("提取6-8个关键词，分号分隔。只返回关键词。", f"摘要:\n{out['abstract_final'][:1500]}")
 
-        out['abstract_critique'] = self._call(
-            "作为评委审阅这个摘要。是否完整概括了所有问题？数字是否准确？"
-            "是否有吸引力？逐条批评并给出改进建议。",
-            f"摘要:\n{out['abstract_v1'][:2000]}")
-        time.sleep(0.3)
+        # 2. 结构规划 (4 calls)
+        print("  [2/4] Structure (4 calls)")
+        out['structure'] = self._reason("设计完整论文结构。每章内容/篇幅/图表位置。", f"题目:\n{problem_text[:2000]}\n结果:\n{summary}")
+        out['structure_review'] = self._call("审查结构。", f"结构:\n{out['structure'][:2000]}")
+        out['structure_final'] = self._call("优化结构。", f"结构:\n{out['structure'][:1000]}\n审查:\n{out['structure_review'][:1000]}")
 
-        out['abstract_v2'] = self._call(
-            "根据审阅意见重写摘要。精益求精。", f"原稿+意见:\n{out['abstract_critique'][:1500]}")
-        time.sleep(0.3)
+        # 3. 跨问题分析 (8 calls)
+        print("  [3/4] Cross-question (8 calls)")
+        out['cross_v1'] = self._reason("对比所有子问题结果。趋势/模式/关联。", f"结果:\n{summary}")
+        out['cross_c1'] = self._call("审阅对比分析。", f"分析:\n{out['cross_v1'][:2000]}")
+        out['cross_final'] = self._call("最终版对比分析。", f"v1:\n{out['cross_v1'][:1000]}\n审阅:\n{out['cross_c1'][:1000]}")
+        out['intro_v1'] = self._reason("写引言(300-400字)。", f"题目:\n{problem_text[:2500]}\n结果:\n{summary}")
+        out['intro_final'] = self._call("最终版引言。", f"v1:\n{out['intro_v1'][:2000]}")
+        out['concl_v1'] = self._reason("写结论(400-500字)。", f"结果:\n{summary}\n对比:\n{out['cross_final'][:1500]}")
+        out['concl_review'] = self._call("审阅结论。", f"结论:\n{out['concl_v1'][:2000]}")
+        out['concl_final'] = self._call("最终版结论。", f"v1:\n{out['concl_v1'][:1000]}\n审阅:\n{out['concl_review'][:1000]}")
 
-        out['abstract_critique2'] = self._call(
-            "再次审阅修改后的摘要。这次从语言流畅度、信息密度、学术规范三个角度评价。",
-            f"摘要v2:\n{out['abstract_v2'][:2000]}")
-        time.sleep(0.3)
+        # 4. 终审 (5 calls)
+        print("  [4/4] Final review (5 calls)")
+        out['quality'] = self._json(
+            "评分: overall/innovation/rigor/readability 0-100。返回JSON。",
+            json.dumps({k: str(v)[:500] for k, v in out.items()}, ensure_ascii=False)[:4000])
+        out['final_check'] = self._reason("终极检查: 数字矛盾/图引用错误/逻辑断裂?", json.dumps({k: str(v)[:300] for k, v in out.items()}, ensure_ascii=False)[:4000])
+        out['polish'] = self._call("5条最关键改进建议。", f"检查:\n{out['final_check'][:2000]}")
+        out['prize_estimate'] = self._call("预估获奖等级和概率。", f"全部:\n{json.dumps(out.get('quality',{}), ensure_ascii=False)}")
+        out['final_verdict'] = self._reason("200字最终评审意见。", json.dumps({k: str(v)[:300] for k, v in out.items()}, ensure_ascii=False)[:3000])
 
-        out['abstract_final'] = self._call(
-            "综合两轮审阅，写出最终版摘要。这是论文的'门面'，要完美。",
-            f"v2:\n{out['abstract_v2'][:1500]}\n审阅:\n{out['abstract_critique2'][:1500]}")
-        time.sleep(0.3)
-
-        out['keywords'] = self._call(
-            "从论文内容中提取6-8个最合适的关键词。要涵盖：问题领域、"
-            "核心方法、关键算法。用中文，分号分隔。只返回关键词，不要其他内容。",
-            f"摘要:\n{out['abstract_final'][:1500]}\n{summary}")
-        time.sleep(0.3)
-
-        # 2. 论文章节规划 (3 calls)
-        print("  [2/4] Paper structure planning (3 calls)")
-        out['structure'] = self._call(
-            "设计论文的完整章节结构。每章写什么内容、占多少篇幅、放哪些图表。"
-            "要像真正竞赛论文的结构一样详细。",
-            f"题目:\n{problem_text[:2000]}\n结果:\n{summary}")
-        time.sleep(0.3)
-
-        out['structure_review'] = self._call(
-            "审查论文结构：逻辑流是否清晰？篇幅分配是否合理？有没有重复或缺失的部分？",
-            f"结构:\n{out['structure'][:2000]}")
-        time.sleep(0.3)
-
-        out['structure_final'] = self._call(
-            "根据审查意见优化论文结构。写出最终版本。",
-            f"结构:\n{out['structure'][:1000]}\n审查:\n{out['structure_review'][:1000]}")
-        time.sleep(0.3)
-
-        # 3. 跨问题对比分析 (5 calls)
-        print("  [3/4] Cross-question synthesis (5 calls)")
-        out['cross_comparison'] = self._call(
-            "对比所有子问题的求解结果。分析：趋势、模式、异常值、"
-            "问题之间的关联性。400-600字的综合分析。",
-            f"全部结果:\n{summary}\n"
-            f"详情:\n{json.dumps({k:{kk:str(vv)[:200] for kk,vv in v.items() if kk!='tour'} for k,v in all_results.items()}, ensure_ascii=False)[:3000]}")
-        time.sleep(0.3)
-
-        out['introduction'] = self._call(
-            "写一段论文引言(问题背景)。结合题目原文，说明研究意义、"
-            "相关工作和本文的贡献。300-400字。",
-            f"题目:\n{problem_text[:2500]}\n结果:\n{summary}")
-        time.sleep(0.3)
-
-        out['conclusion'] = self._call(
-            "写论文结论。总结所有子问题的核心发现，给出综合性的结论和建议。400-500字。",
-            f"结果:\n{summary}\n对比:\n{out['cross_comparison'][:1500]}")
-        time.sleep(0.3)
-
-        out['conclusion_review'] = self._call(
-            "审阅结论部分。是否准确总结了所有发现？建议是否具体可行？",
-            f"结论:\n{out['conclusion'][:2000]}")
-        time.sleep(0.3)
-
-        out['conclusion_final'] = self._call(
-            "根据审阅意见优化结论。这是论文的最后一部分，要给人留下深刻印象。",
-            f"结论:\n{out['conclusion'][:1000]}\n意见:\n{out['conclusion_review'][:1000]}")
-        time.sleep(0.3)
-
-        # 4. 整体质量终审 (3 calls)
-        print("  [4/4] Final quality review (3 calls)")
-        out['paper_quality'] = self._json(
-            f"从整体质量(0-100)、创新性(0-100)、严谨性(0-100)、可读性(0-100)评分。"
-            f"返回JSON: {{'overall':0,'innovation':0,'rigor':0,'readability':0,"
-            f"'pass_judge':true/false,'estimated_prize':'省二/省一/国二/国一'}}",
-            f"完整论文内容:\n{json.dumps({k:str(v)[:500] for k,v in out.items()}, ensure_ascii=False)[:4000]}")
-        time.sleep(0.3)
-
-        out['final_check'] = self._call(
-            "做最终检查：有没有数字前后矛盾？有没有图表引用错误？"
-            "有没有逻辑断裂？列出所有发现的问题。",
-            f"论文:\n{json.dumps({k:str(v)[:300] for k,v in out.items()}, ensure_ascii=False)[:4000]}")
-        time.sleep(0.3)
-
-        out['polish_instructions'] = self._call(
-            "给出5条最关键的改进建议，每一条都会显著提升论文质量。要具体可操作。",
-            f"检查结果:\n{out['final_check'][:2000]}")
-        time.sleep(0.3)
-
-        print(f"\n  PAPER-LEVEL done: {self.total_calls} total calls, ¥{self.total_cost:.4f}")
-        pq = out.get('paper_quality', {})
+        pq = out.get('quality', {})
         overall = pq.get('overall', 75) if isinstance(pq, dict) else 75
         prize = pq.get('estimated_prize', '?') if isinstance(pq, dict) else '?'
-        print(f"  Quality: {overall}/100, Estimated prize: {prize}")
+        print(f"\n  PAPER DONE: {self.total_calls} calls, ¥{self.total_cost:.4f}, {overall}/100, est.{prize}")
         return out
