@@ -197,6 +197,7 @@ def main():
                 # Phase A: Deep solver (5+ min computation)
                 print(f"  [Phase A] Deep TSP solving ({n} locations, 10min budget)...")
                 deep_result = deep_solve_tsp(sparse, n, fig_dir, sp_id, time_budget=600)
+                dist = deep_result["best"]["distance"]
 
                 # Phase B: AI writes code + generates figures (massive context per call)
                 ai_insights = {}
