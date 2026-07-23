@@ -198,27 +198,25 @@ def main():
                 print(f"  [Phase A] Deep TSP solving ({n} locations, 10min budget)...")
                 deep_result = deep_solve_tsp(sparse, n, fig_dir, sp_id, time_budget=600)
 
-                # Phase B: Multi-round AI analysis (if api_key)
+                # Phase B: Full 18-round AI deep thinking
                 ai_insights = {}
                 if api_key:
-                    print(f"  [Phase B] Multi-round AI analysis (5 calls)...")
+                    print(f"  [Phase B] 18-round AI deep thinking...")
                     try:
                         from mathmodel.pipeline.deep_thinker import DeepThinker
                         thinker = DeepThinker(api_key=api_key)
-                        ai_insights = thinker.think_about_problem(
-                            sp, problem_text, data_profiles,
-                            {"total_distance": deep_result["best"]["distance"],
-                             "tour": deep_result["best"]["tour"][:10],
-                             "method": deep_result["best"]["method"],
-                             "all_methods": str(deep_result["all_ranked"])})
-                        # AI figure design
-                        fig_plan = thinker.design_figures(
-                            sp_id, {"type": ptype, "title": sp.get("title","")},
-                            {"distance": deep_result["best"]["distance"],
-                             "tour": str(deep_result["best"]["tour"]),
-                             "n_locations": n}, fig_dir)
+                        result_preview = {
+                            "total_distance": deep_result["best"]["distance"],
+                            "tour": deep_result["best"]["tour"][:10],
+                            "method": deep_result["best"]["method"],
+                            "n_locations": n,
+                            "all_methods": deep_result["all_ranked"],
+                        }
+                        ai_insights = thinker.think_deep(
+                            sp, problem_text, data_profiles, result_preview, fig_dir)
                     except Exception as e:
-                        print(f"  AI analysis: {e}")
+                        print(f"  AI thinking error: {e}")
+                        import traceback; traceback.print_exc()
 
                 all_results[f"sub_{sp_id}"] = {
                     "method": "Floyd-Warshall + TSP(NN+2-opt+SA)",
@@ -228,14 +226,18 @@ def main():
                     "n_locations": n, "n_vehicles": 1,
                     "all_methods": deep_result["all_ranked"],
                     "total_time_s": deep_result["total_time"],
-                    "ai_analysis": ai_insights.get("interpretation", ""),
-                    "ai_quality": ai_insights.get("quality_check", {}).get("quality_score", 0),
-                    "summary": f"最短配送回路总距离: {deep_result['best']['distance']}km, "
-                              f"覆盖全部{n}个地点。{ai_insights.get('interpretation', '')[:200]}"
+                    "ai_analysis": ai_insights.get("result_final", ""),
+                    "ai_model_debate": ai_insights.get("model_decision", ""),
+                    "ai_figures": [ai_insights.get(f"figure_{i+1}", {}) for i in range(3)],
+                    "ai_quality": ai_insights.get("quality_scores", {}).get("overall_score", 0),
+                    "ai_judge_comment": ai_insights.get("judge_comment", ""),
+                    "summary": (f"最短配送回路总距离: {deep_result['best']['distance']}km, "
+                               f"覆盖全部{n}个地点。"
+                               f"{ai_insights.get('result_final', '')[:300]}")
                 }
-                print(f"     Result: {deep_result['best']['distance']}km "
-                      f"(computation: {deep_result['total_time']:.0f}s, "
-                      f"AI calls: {ai_insights.get('total_api_calls', 0)})")
+                print(f"     Result: {deep_result['best']['distance']}km")
+                print(f"     AI calls: {thinker.total_calls if api_key else 0}, "
+                      f"cost: ¥{thinker.total_cost if api_key else 0:.4f}")
             continue
         elif f"sub_{sp_id}" in contest_results:
             best = contest_results[f"sub_{sp_id}"]
@@ -439,6 +441,14 @@ def main():
             from mathmodel.pipeline.smart_orchestrator import AIDrivenPipeline
             ai = AIDrivenPipeline(api_key=api_key, model="deepseek-chat")
             dsum = "\n".join(f"{n}: {p['shape'][0]}r x {p['shape'][1]}c" for n, p in data_profiles.items())
+            # Inject deep thinking results into AI content
+            for sp in sub_problems:
+                sp_id = sp["id"]
+                deep = all_results.get(f"sub_{sp_id}", {})
+                if deep.get("ai_analysis"):
+                    ai_content[f"section_{sp_id}"] = deep["ai_analysis"]
+                    print(f"  Using deep analysis for Q{sp_id} ({len(deep['ai_analysis'])} chars)")
+
             # Inject user requirements into AI planning
             if USER_NOTES:
                 problem_text_aug = problem_text + f"\n\n[用户自定义要求]\n{USER_NOTES}"
