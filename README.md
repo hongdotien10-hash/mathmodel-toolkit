@@ -175,6 +175,7 @@ plotter.save(fig, "figures/scores.pdf")
 ---
 qq:1164217385
 有不成熟的地方欢迎大家提建议
+使用说明： https://v.douyin.com/ke9D1HscMD0/ 
 
 ## 📄 许可证
 
