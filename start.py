@@ -32,11 +32,25 @@ set_seed(42)
 PROBLEMS_DIR = Path(__file__).parent / "problems"
 OUTPUT_DIR = Path(__file__).parent / "output"
 
+# --- CLI flags ---
+INTERACTIVE = "--interactive" in sys.argv or "-i" in sys.argv
+
+
+def _pause(msg="Continue?"):
+    """交互模式暂停"""
+    if INTERACTIVE:
+        try:
+            input(f"\n  [PAUSE] {msg} (press Enter to continue, Ctrl+C to stop) ")
+        except (EOFError, KeyboardInterrupt):
+            print("\n  Stopped by user.")
+            sys.exit(0)
 
 
 def main():
     tracker = PhaseTracker(title="MathModel Toolkit PRO")
     print_header("MathModel Toolkit PRO — Award-Level")
+    if INTERACTIVE:
+        print("  [Interactive mode] Will pause at each phase for review.")
 
     # === Step 1: Scan & Load (same as free version) ===
     problem_dirs = sorted([d for d in PROBLEMS_DIR.iterdir()
@@ -108,6 +122,7 @@ def main():
             print(f"     Winner: {cr.get('winner','?')} | {cr.get('ai_reason','')[:80]}...")
     if not api_key:
         print("  [本地对比] 基于指标数值自动选优")
+    _pause("Contest done. Continue to solving?")
 
     # === Step 5: Solve with best models ===
     print_section("Phase 3: Solving with Best Models")
@@ -221,6 +236,8 @@ def main():
     print_section("PRO Phase 6: Professional Chart Suites")
     cs = ChartSuite()
     for key, val in all_results.items():
+        if "tour" in val or "routes" in val:
+            _make_routing_figure(val, key, fig_dir)
         if "forecast" in val and "fitted" in val:
             cs.prediction_suite(val.get("original", []), val["fitted"], val["forecast"],
                                 output_path=str(fig_dir / f"{key}_pred_suite.png"))
@@ -264,6 +281,8 @@ def main():
             print(f"  Abstract: {len(ai_content.get('abstract',''))} chars")
         except Exception as e:
             print(f"  AI writing failed: {e}")
+
+    _pause("All results ready. Generate paper now?")
 
     # === Step 10: Generate Papers ===
     print_section("Phase 8: Paper Generation")
@@ -435,7 +454,7 @@ def _build_complete_graph(numeric, n):
 
 
 def _tsp_solve(D, n, max_starts=15):
-    """TSP: 多起点最近邻 + 2-opt 局部搜索"""
+    """TSP: 多起点最近邻 + 2-opt + 模拟退火 多算法对比选最优"""
     gs = GraphSolver()
     best_dist, best_tour = float('inf'), None
 
@@ -446,11 +465,11 @@ def _tsp_solve(D, n, max_starts=15):
             best_dist = r['total_distance']
             best_tour = r['tour']
 
-    # Phase 2: 2-opt improvement
+    # Phase 2: 2-opt improvement on NN result
     improved = True
-    iterations = 0
-    while improved and iterations < 100:
-        improved = False; iterations += 1
+    iters = 0
+    while improved and iters < 100:
+        improved = False; iters += 1
         for i in range(1, len(best_tour) - 3):
             for j in range(i + 2, len(best_tour) - 1):
                 old_d = D[best_tour[i-1]][best_tour[i]] + D[best_tour[j]][best_tour[j+1]]
@@ -459,6 +478,38 @@ def _tsp_solve(D, n, max_starts=15):
                     best_tour[i:j+1] = reversed(best_tour[i:j+1])
                     best_dist = best_dist - old_d + new_d
                     improved = True
+
+    # Phase 3: Also try Simulated Annealing for problems >= 10 nodes
+    if n >= 10:
+        sa_dist, sa_tour = _tsp_simulated_annealing(D, n, iterations=3000)
+        if sa_dist < best_dist:
+            best_dist, best_tour = sa_dist, sa_tour
+            print(f"     SA improved: {best_dist}")
+
+    return round(best_dist, 1), best_tour
+
+
+def _tsp_simulated_annealing(D, n, temp_start=1000, cooling=0.995, iterations=5000):
+    """模拟退火 TSP 求解器"""
+    import random
+    tour = list(range(n))
+    random.shuffle(tour)
+    tour.append(tour[0])
+    current_dist = sum(D[tour[i]][tour[i+1]] for i in range(n))
+    best_tour, best_dist = tour[:], current_dist
+    temp = temp_start
+
+    for _ in range(iterations):
+        i, j = sorted(random.sample(range(1, n), 2))
+        if j - i < 2: continue
+        new_tour = tour[:i] + tour[i:j+1][::-1] + tour[j+1:]
+        new_dist = sum(D[new_tour[k]][new_tour[k+1]] for k in range(n))
+
+        if new_dist < current_dist or random.random() < np.exp((current_dist - new_dist) / max(temp, 1e-10)):
+            tour, current_dist = new_tour, new_dist
+            if current_dist < best_dist:
+                best_tour, best_dist = tour[:], current_dist
+        temp *= cooling
 
     return round(best_dist, 1), best_tour
 
@@ -571,6 +622,60 @@ def _solve_routing_from_coords(sp, numeric, df, results, gs, n, sp_text):
         "summary": f"最短路径: {n}个地点, 总距离={dist}, 1辆车"
     }
     print(f"     TSP: {dist} total distance")
+
+
+def _make_routing_figure(val, key, fig_dir):
+    """生成路径优化图：TSP路线 or VRP多车路线"""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from mathmodel.visualization.styles import despine, get_colors
+
+    tour = val.get("tour", [])
+    routes = val.get("routes", [])
+    total_dist = val.get("total_distance", 0)
+    n_veh = val.get("n_vehicles", 1)
+
+    if not tour and not routes:
+        return
+
+    colors = get_colors(max(len(routes) if routes else 1, 5))
+
+    if routes:
+        # VRP multi-route map
+        fig, ax = plt.subplots(figsize=(8, 5))
+        for ri, rd in enumerate(routes):
+            path = rd.get("path", [])
+            xs = list(range(len(path)))
+            ys = [ri * 10] * len(path)
+            ax.plot(xs, [ri*10 + 2]*len(xs), 'o-', color=colors[ri % len(colors)],
+                    markersize=6, linewidth=2, label=f"Route {ri+1} ({rd.get('distance','?')}km)")
+            for j, p in enumerate(path):
+                ax.annotate(str(p), (j, ri*10 + 2.5), fontsize=7, ha='center')
+        ax.set_title(f"VRP Routes ({n_veh} vehicles, {total_dist}km total)", fontsize=12)
+        ax.set_xlabel("Stop Sequence"); ax.set_ylabel("Route")
+        ax.legend(fontsize=8, frameon=False)
+        despine(ax); ax.grid(alpha=0.2, linestyle=":")
+    else:
+        # TSP route diagram
+        fig, ax = plt.subplots(figsize=(8, 4))
+        n = len(tour)
+        xs = list(range(n))
+        ys = [0] * n
+        ax.plot(xs, ys, 'o-', color=colors[0], markersize=8, linewidth=2,
+                markerfacecolor='white', markeredgewidth=2)
+        for i, t in enumerate(tour):
+            ax.annotate(str(t), (i, 0.3), fontsize=8, ha='center', fontweight='bold')
+        ax.set_title(f"TSP Optimal Route ({total_dist}km, {n-1} stops)", fontsize=12)
+        ax.set_xlabel("Visit Order"); ax.set_ylabel("")
+        ax.set_yticks([])
+        despine(ax); ax.grid(alpha=0.2, axis='x', linestyle=":")
+
+    fig.tight_layout()
+    path = Path(fig_dir) / f"{key}_route.png"
+    fig.savefig(str(path), dpi=300, bbox_inches='tight', facecolor='white')
+    plt.close(fig)
+    print(f"  [{key}] Routing figure generated")
 
 
 def _find_df(data_files, ptype):

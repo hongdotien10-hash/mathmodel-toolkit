@@ -504,44 +504,103 @@ def _build_prediction_section(doc, sp_id, result, fig_dir, fig_num, ai_text=""):
 
 
 def _build_optimization_section(doc, sp_id, result, fig_dir, fig_num, ai_text=""):
+    """优化模型章节 — 自动检测TSP/VRP vs 背包 写相应内容"""
     sec = f"4.{sp_id}"
-    _heading(doc, f"{sec} 优化模型", 2)
+    result = result or {}
+    is_routing = bool(result.get("tour") or result.get("routes") or result.get("total_distance"))
+    is_knapsack = bool(result.get("selection"))
+
+    _heading(doc, f"{sec} 模型建立与求解", 2)
+
+    if is_routing:
+        _routing_section_content(doc, sec, result, fig_dir, fig_num, ai_text)
+    elif is_knapsack:
+        _knapsack_section_content(doc, sec, result, fig_dir, fig_num, ai_text)
+    elif ai_text and len(ai_text) > 50:
+        _para(doc, ai_text)
+    else:
+        _para(doc, "该问题为优化类问题，通过建立数学模型寻找最优方案。"
+              "具体模型需结合实际数据与约束条件进行构建。")
+
+
+def _routing_section_content(doc, sec, result, fig_dir, fig_num, ai_text):
+    """TSP/VRP路径优化论文内容"""
+    method = result.get("method", "路径优化算法")
+    n_locations = result.get("n_locations", "?")
+    n_vehicles = result.get("n_vehicles", 1)
+    total_dist = result.get("total_distance", "?")
+
     _heading(doc, f"{sec}.1 问题描述与建模", 3)
-    _para(doc, "该问题可抽象为带资源约束的组合优化问题。目标是在满足预算限制的条件下，"
-          "选择一组方案使得总收益最大化。每个方案具有'选或不选'的二值特性，"
-          "因此适合建立0-1整数规划模型。")
-    _para(doc, "决策变量：设x_i∈{0,1}，x_i=1表示选择第i个方案。\n"
-          "目标函数（最大化总收益）：max Z=Σ p_i·x_i\n"
-          "约束条件：（1）资源约束Σ c_i·x_i ≤ B；（2）0-1约束x_i∈{0,1}。\n"
-          "其中p_i为第i个方案的收益，c_i为成本，B为预算上限。")
+    if n_vehicles > 1:
+        _para(doc, f"该问题属于带容量约束的车辆路径问题（CVRP）。"
+              f"涉及{n_locations}个地点的物资配送任务，需在车辆载重约束下规划最优路线，"
+              f"目标是最小化总配送距离。CVRP是经典的NP-hard组合优化问题。")
+        _para(doc, f"目标函数：min Z = sum sum d(i,j) * x(i,j,k)\n"
+              f"约束条件：每个地点恰好被访问一次；车辆载重不超过容量；消除子回路。")
+    else:
+        _para(doc, f"该问题属于旅行商问题（TSP），需找到一条遍历{n_locations}个地点的"
+              f"最短闭合回路。TSP是经典的NP-hard问题，精确求解复杂度O(n!)。")
+
     _heading(doc, f"{sec}.2 求解方法", 3)
-    _para(doc, "0-1整数规划是NP-hard问题，但中等规模（n≤100）可通过分枝定界法精确求解。"
-          "分枝定界法通过智能地搜索决策树，利用线性规划松弛给出上下界，"
-          "剪去不可能包含最优解的分枝，最终在有限时间内找到全局最优解。"
-          "此外，对于大规模问题，可采用基于性价比（收益/成本比）的贪心算法"
-          "快速获得近似最优解，其最优性误差通常在10%以内。")
+    _para(doc, f"采用{method}进行求解：\n"
+          f"(1) Floyd-Warshall算法计算稀疏路网全对最短路径，将不完全连通图转化为完全图；\n"
+          f"(2) 多起点最近邻算法（Nearest Neighbor）构建初始回路，从{n_locations}个节点"
+          f"分别出发取最优；\n"
+          f"(3) 2-opt局部搜索算法对初始解迭代优化，通过交换边对消除路径交叉和绕路。"
+          + (f"\n(4) 将TSP回路按车辆容量约束分割为{n_vehicles}条配送路线。" if n_vehicles > 1 else ""))
+
     _heading(doc, f"{sec}.3 求解结果", 3)
-    if result and "selection" in result:
-        sel, cost = result.get("selection", []), result.get("total_cost", 0)
-        pop = result.get("total_population", 0)
-        budget = result.get("budget", 100)
-        _para(doc, f"最优解为选择方案{'、'.join(str(s) for s in sel)}。"
-              f"总成本{cost:.1f}（预算约束{budget:.1f}），"
-              f"预算利用率{cost/budget*100:.1f}%。"
-              f"总收益{pop:.1f}，实现了在预算内的收益最大化。")
-        rows = []
-        solution = result.get("solution", [])
-        costs_list = result.get("costs", [])
-        for i, s in enumerate(solution):
-            rows.append([str(i+1), f"{costs_list[i]:.1f}" if i < len(costs_list) else "-",
-                         "入选" if s > 0.5 else "未入选"])
+    if n_vehicles > 1:
+        _para(doc, f"最终规划出{n_vehicles}条配送路线，总配送距离为{total_dist}km。")
+        routes = result.get("routes", [])
+        route_rows = []
+        for rd in routes:
+            rpath = " -> ".join(str(p) for p in rd.get("path", [])[:8])
+            route_rows.append([f"路线{rd.get('route','?')}",
+                             f"{rd.get('distance','?')}km",
+                             f"{rd.get('load','?')}kg",
+                             rpath])
+        if route_rows:
+            _table_from_data(doc, ["路线", "距离", "载重", "路径"],
+                           route_rows, f"表{fig_num[0]+1}：配送路线详情")
+    else:
+        speed = 92.0
+        _para(doc, f"最短配送回路总距离为{total_dist}km，覆盖全部{n_locations}个配送地点。"
+              f"按平均车速{speed}km/h计算，预计配送时间为{total_dist/speed:.2f}小时。")
+        tour_labels = result.get("tour_labels", [])
+        if tour_labels:
+            _para(doc, f"最优配送顺序：{' -> '.join(str(l) for l in tour_labels[:10])}")
+
+
+def _knapsack_section_content(doc, sec, result, fig_dir, fig_num, ai_text):
+    """0-1背包/资源分配论文内容"""
+    _heading(doc, f"{sec}.1 问题描述与建模", 3)
+    _para(doc, "该问题可抽象为带资源约束的组合优化问题，适合建立0-1整数规划模型。")
+    _para(doc, "决策变量：设x_i属于{0,1}，x_i=1表示选择第i个方案。\n"
+          "目标函数（最大化总收益）：max Z = sum p_i * x_i\n"
+          "约束条件：(1)资源约束 sum c_i * x_i <= B；(2)0-1约束 x_i属于{0,1}。")
+
+    _heading(doc, f"{sec}.2 求解方法", 3)
+    _para(doc, "采用贪心算法（性价比排序）获取初始解，"
+          "对小规模问题使用分枝定界法精确求解，取两者最优。")
+
+    _heading(doc, f"{sec}.3 求解结果", 3)
+    sel = result.get("selection", [])
+    cost = result.get("total_cost", 0)
+    budget = result.get("budget", 100)
+    pop = result.get("total_population", 0)
+    _para(doc, f"最优解为选择方案{'、'.join(str(s) for s in sel)}。"
+          f"总成本{cost:.1f}（预算约束{budget:.1f}），"
+          f"预算利用率{cost/budget*100:.1f}%。总收益{pop:.1f}。")
+    rows = []
+    solution = result.get("solution", [])
+    costs_list = result.get("costs", [])
+    for i, s in enumerate(solution):
+        rows.append([str(i+1), f"{costs_list[i]:.1f}" if i < len(costs_list) else "-",
+                     "入选" if s > 0.5 else "未入选"])
+    if rows:
         _table_from_data(doc, ["方案序号", "成本", "选择结果"], rows,
-                         f"表{sp_id+1}：优化方案详情")
-    for pat in ["site*.png", "*optimal*.png", "*selection*.png"]:
-        for f in sorted(fig_dir.glob(pat)):
-            fig_num[0] += 1
-            _insert_figure(doc, f, f"图{fig_num[0]}：优化方案对比")
-            break
+                       f"表{fig_num[0]+1}：优化方案详情")
 
 
 def _build_statistics_section(doc, sp_id, result, fig_dir, fig_num, ai_text=""):
