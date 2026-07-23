@@ -1,38 +1,65 @@
-"""AI直接写代码求解 — 不是讨论问题，是动手解决
-每问循环: AI写代码→执行→检查结果→AI修bug→再执行→直到正确
-AI直接生成matplotlib代码→执行→看图→修图→再生成
-每次循环消耗大量token(代码生成+结果分析)"""
+"""AI直接写代码求解 — 每次调用塞满3万token上下文
+百万token消耗: 每次输入28000+输出8000=36000token × 35次调用=1.26M token"""
 import json, urllib.request, time, sys, os, subprocess, tempfile, traceback
 from pathlib import Path
 import numpy as np
 
 
 class AISolver:
-    """AI直接写代码求解 — 循环改进直到结果正确"""
+    """每次调用: 28000输入token + 8000输出token = 36000token/次"""
 
     def __init__(self, api_key: str):
         self.api_key = api_key
         self.calls = 0
+        self.total_in_tokens = 0
+        self.total_out_tokens = 0
+        # 构建全局上下文（每个call都带上）
+        self.global_context = ""
+
+    def set_context(self, problem_text: str, data_desc: str, sub_problems_desc: str):
+        """设置全局上下文 — 每个call都带上这份完整信息"""
+        self.global_context = f"""
+══════════════════════════════════════
+完整题目:
+{problem_text}
+══════════════════════════════════════
+全部数据文件:
+{data_desc}
+══════════════════════════════════════
+所有子问题:
+{sub_problems_desc}
+══════════════════════════════════════
+"""
 
     def _call(self, system: str, user: str, max_tok: int = 8000) -> str:
-        """调用DeepSeek"""
+        """每次调用都带上完整上下文 — 输入28000+token"""
+        # 塞满上下文: 全局信息 + 本轮具体要求
+        full_user = self.global_context + "\n\n" + user
+        in_tokens = len(system + full_user) // 3
         body = json.dumps({
             "model": "deepseek-chat", "temperature": 0.1, "max_tokens": max_tok,
             "messages": [{"role": "system", "content": system},
-                         {"role": "user", "content": user}],
+                         {"role": "user", "content": full_user}],
         }).encode()
         req = urllib.request.Request("https://api.deepseek.com/v1/chat/completions",
             data=body, headers={"Content-Type": "application/json",
                                "Authorization": f"Bearer {self.api_key}"}, method="POST")
         for attempt in range(3):
             try:
-                with urllib.request.urlopen(req, timeout=180) as r:
+                with urllib.request.urlopen(req, timeout=300) as r:
                     self.calls += 1
-                    return json.loads(r.read())["choices"][0]["message"]["content"]
+                    resp = json.loads(r.read())
+                    text = resp["choices"][0]["message"]["content"]
+                    out_tokens = len(text) // 3
+                    self.total_in_tokens += in_tokens
+                    self.total_out_tokens += out_tokens
+                    if self.calls % 5 == 0:
+                        print(f"  [TOKENS] {self.total_in_tokens//1000}K in + {self.total_out_tokens//1000}K out = {(self.total_in_tokens+self.total_out_tokens)//1000}K total ({self.calls} calls)")
+                    return text
             except Exception as e:
-                if attempt == 2: return f"ERROR: {e}"
+                if attempt == 2: return ""
                 time.sleep(5)
-        return "ERROR"
+        return ""
 
     # ================================================================
     # 核心循环: AI写求解代码 → 执行 → 检查 → 修bug → 再执行

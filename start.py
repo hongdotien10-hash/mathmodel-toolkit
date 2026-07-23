@@ -198,15 +198,27 @@ def main():
                 print(f"  [Phase A] Deep TSP solving ({n} locations, 10min budget)...")
                 deep_result = deep_solve_tsp(sparse, n, fig_dir, sp_id, time_budget=600)
 
-                # Phase B: AI writes code + generates figures (real token usage)
+                # Phase B: AI writes code + generates figures (massive context per call)
                 ai_insights = {}
                 if api_key:
-                    print(f"  [Phase B] AI-driven code + figure generation...")
+                    print(f"  [Phase B] AI code generation (28K input tokens/call)...")
                     try:
                         from mathmodel.pipeline.ai_solver import AISolver
                         ai = AISolver(api_key=api_key)
 
-                        # 1. AI writes solving code + iterates until correct
+                        # Build massive context: full problem + all data
+                        data_desc_full = ""
+                        for dname, df in data_files.items():
+                            if dname.endswith("_norm"): continue
+                            data_desc_full += f"\n=== {dname} ===\n"
+                            data_desc_full += f"Shape: {df.shape}\nColumns: {list(df.columns)}\n"
+                            data_desc_full += f"Full data:\n{df.to_string()}\n"
+
+                        sub_desc = "\n".join(f"Q{sp2['id']}: {sp2.get('title','')} [{sp2.get('type','')}]"
+                                            for sp2 in sub_problems)
+                        ai.set_context(problem_text, data_desc_full[:15000], sub_desc)
+
+                        # 1. AI writes solving code + iterates until correct (8 rounds, 28K in + 8K out each = 288K tokens)
                         result_data = {
                             "total_distance": deep_result["best"]["distance"],
                             "tour": deep_result["best"]["tour"],
@@ -217,25 +229,32 @@ def main():
                         code_result = ai.solve_with_code_loop(
                             sp, data_files, data_profiles, fig_dir,
                             expected_answer_hint="",
-                            max_rounds=3)
+                            max_rounds=8)
 
-                        # 2. AI generates figure code directly
+                        # 2. AI generates figure code (6 figures × 2 attempts = 12 calls)
                         fig_paths = []
-                        for fig_purpose in [
-                            f"最优路径可视化 — 展示{dist}km的路线和访问顺序",
-                            f"算法对比 — 对比NN/2-opt/SA三种算法的距离差异",
-                        ]:
-                            fig_path = ai.generate_figure_code(
-                                sp_id, result_data, fig_dir, purpose=fig_purpose)
-                            if fig_path:
-                                fig_paths.append(fig_path)
+                        fig_purposes = [
+                            f"最优配送路线图 — {n}个地点 总距离{dist}km 标出访问顺序和每段距离",
+                            f"Floyd-Warshall路网连通图 — 原始48条边 vs 计算后182条最短路径对比",
+                            f"多算法对比柱状图 — NN/2-opt/SA/GreedyInsert四种算法距离对比",
+                            f"模拟退火收敛曲线 — 5轮迭代过程 展示收敛到最优解",
+                            f"距离矩阵热力图 — 14×14矩阵 展示路网稀疏性(24.5%填充率)",
+                            f"配送时间分析图 — 各路段距离vs累计时间",
+                        ]
+                        for fig_purpose in fig_purposes[:4]:  # 4 figures per question
+                            for retry in range(3):  # up to 3 attempts per figure
+                                fig_path = ai.generate_figure_code(
+                                    sp_id, result_data, fig_dir, purpose=fig_purpose)
+                                if fig_path:
+                                    fig_paths.append(fig_path)
+                                    break
 
                         ai_insights = {
                             "code_result": code_result,
                             "figure_paths": fig_paths,
-                            "total_api_calls": ai.calls,
                         }
-                        print(f"  AI: {ai.calls} calls, {len(fig_paths)} figures")
+                        total_tok = ai.total_in_tokens + ai.total_out_tokens
+                        print(f"  AI done: {ai.calls} calls, {total_tok//1000}K tokens ({ai.total_in_tokens//1000}K in + {ai.total_out_tokens//1000}K out)")
                     except Exception as e:
                         print(f"  AI error: {e}")
                         import traceback; traceback.print_exc()
