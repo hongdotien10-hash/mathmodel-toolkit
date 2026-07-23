@@ -58,11 +58,13 @@ def _pause(msg="Continue?"):
 def main():
     # --- Show interactive menu ---
     from mathmodel.pipeline.menu import show_menu
-    CONTEST_TYPE, MAX_QUESTIONS = show_menu()
+    CONTEST_TYPE, MAX_QUESTIONS, MAX_PAGES, MAX_FIGURES, USER_NOTES = show_menu()
     cp = CONTEST_PARAMS.get(CONTEST_TYPE, CONTEST_PARAMS["auto"])
 
     tracker = PhaseTracker(title="MathModel Toolkit PRO")
     print_header(f"MathModel Toolkit — {cp['name']}")
+    if USER_NOTES:
+        print(f"  User requirements: {USER_NOTES[:200]}")
     if INTERACTIVE:
         print("  [Interactive mode] Will pause at each phase for review.")
 
@@ -273,13 +275,16 @@ def main():
     print_section("PRO Phase 6: Professional Chart Suites")
     cs = ChartSuite()
 
-    # === Auto-generate all relevant figures from figure library ===
+    # === AI智能选图 ===
     try:
-        from mathmodel.visualization.figure_library import auto_generate_figures
-        generated = auto_generate_figures(all_results, data_files, fig_dir, sub_problems)
-        print(f"  Auto-generated {len(generated)} figures: {', '.join(generated[:10])}")
+        from mathmodel.pipeline.ai_figure_selector import ai_select_figures, generate_selected_figures
+        print(f"  [AI] Analyzing results to select best figures (max {MAX_FIGURES})...")
+        selections = ai_select_figures(sub_problems, all_results, data_files, max_figures=MAX_FIGURES)
+        generated = generate_selected_figures(selections, all_results, data_files, fig_dir, sub_problems)
+        print(f"  [AI] Generated {len(generated)}/{len(selections)} selected figures")
     except Exception as e:
-        print(f"  Figure library: {e}")
+        print(f"  AI figure selection: {e}")
+        import traceback; traceback.print_exc()
 
     # Generate professional figures from real data
     try:
@@ -368,7 +373,12 @@ def main():
             from mathmodel.pipeline.smart_orchestrator import AIDrivenPipeline
             ai = AIDrivenPipeline(api_key=api_key, model="deepseek-chat")
             dsum = "\n".join(f"{n}: {p['shape'][0]}r x {p['shape'][1]}c" for n, p in data_profiles.items())
-            plan = ai.analyze_and_plan(problem_text, dsum)
+            # Inject user requirements into AI planning
+            if USER_NOTES:
+                problem_text_aug = problem_text + f"\n\n[用户自定义要求]\n{USER_NOTES}"
+            else:
+                problem_text_aug = problem_text
+            plan = ai.analyze_and_plan(problem_text_aug, dsum)
             analyses = ai.interpret_results(plan, all_results)
             ai_content["abstract"] = ai.write_abstract(problem_text, plan, all_results, analyses)
             ai_content["sensitivity"] = ai.write_sensitivity_section(all_results)
