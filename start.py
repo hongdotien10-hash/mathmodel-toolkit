@@ -232,20 +232,22 @@ def main():
                         code_result = ai.solve_with_code_loop(
                             sp, data_files, data_profiles, fig_dir,
                             expected_answer_hint="",
-                            max_rounds=8)
+                            max_rounds=15)  # 15 rounds for thorough solving
 
                         # 2. AI generates figure code (6 figures × 2 attempts = 12 calls)
                         fig_paths = []
                         fig_purposes = [
-                            f"最优配送路线图 — {n}个地点 总距离{dist}km 标出访问顺序和每段距离",
-                            f"Floyd-Warshall路网连通图 — 原始48条边 vs 计算后182条最短路径对比",
-                            f"多算法对比柱状图 — NN/2-opt/SA/GreedyInsert四种算法距离对比",
-                            f"模拟退火收敛曲线 — 5轮迭代过程 展示收敛到最优解",
-                            f"距离矩阵热力图 — 14×14矩阵 展示路网稀疏性(24.5%填充率)",
-                            f"配送时间分析图 — 各路段距离vs累计时间",
+                            f"最优配送路线图 — {n}个地点 总距离{dist}km 标出访问顺序和每段距离 中文标注",
+                            f"Floyd-Warshall路网连通图 — 原始48条边 vs 计算后182条最短路径对比 中文",
+                            f"多算法对比柱状图 — NN/2-opt/SA/GreedyInsert四种算法距离对比 中文标注",
+                            f"模拟退火收敛曲线 — 5轮迭代过程 展示收敛到最优解 中文",
+                            f"距离矩阵热力图 — {n}x{n}矩阵 展示路网稀疏性 中文标注",
+                            f"配送时间分析图 — 各路段距离vs累计时间 中文",
+                            f"算法运行时间对比图 — 不同算法的耗时对比 中文",
+                            f"最优路径节点访问顺序图 — 展示每个节点的访问序号 中文",
                         ]
-                        for fig_purpose in fig_purposes[:4]:  # 4 figures per question
-                            for retry in range(3):  # up to 3 attempts per figure
+                        for fig_purpose in fig_purposes[:8]:  # 8 figures per question
+                            for retry in range(3):
                                 fig_path = ai.generate_figure_code(
                                     sp_id, result_data, fig_dir, purpose=fig_purpose)
                                 if fig_path:
@@ -538,6 +540,35 @@ def main():
             if abstract_v2 and len(abstract_v2) > 100:
                 ai_content["abstract"] = abstract_v2
                 print(f"  Abstract v2: {len(abstract_v2)} chars")
+
+            # 3. AI writes each model section
+            for sp in sub_problems:
+                sp_id = sp.get("id", "?")
+                r = all_results.get(f"sub_{sp_id}", {})
+                sp_text = sp.get("title", "")
+                section = pw._call(
+                    f"为论文的'问题{sp_id}模型建立与求解'章节写500-800字的正文。"
+                    f"包含: 问题描述、数学模型(用文字描述公式)、求解方法(具体步骤)、"
+                    f"求解结果(引用具体数字{result_summary})。中文, 学术风格。"
+                    f"不要泛泛而谈, 要基于具体数据。",
+                    f"题目: {sp_text}\n结果: {result_summary}\n"
+                    f"详细: {json.dumps({k: str(v)[:300] for k, v in r.items() if k != 'tour'}, ensure_ascii=False, default=str)}",
+                    max_tok=4000)
+                if section and len(section) > 100:
+                    ai_content[f"section_{sp_id}"] = section
+                    print(f"  Q{sp_id} section: {len(section)} chars")
+
+            # 4. AI reviews and improves each section
+            for sp in sub_problems:
+                sp_id = sp.get("id", "?")
+                v1 = ai_content.get(f"section_{sp_id}", "")
+                if v1:
+                    v2 = pw._call(
+                        "审阅这段论文并重写一个更好的版本。要更学术、更精确、更有深度。",
+                        f"原稿:\n{v1[:3000]}\n\n请重写。", max_tok=4000)
+                    if v2 and len(v2) > 100:
+                        ai_content[f"section_{sp_id}"] = v2
+                        print(f"  Q{sp_id} section v2: {len(v2)} chars")
 
             print(f"  Paper writing: {pw.calls} calls")
         except Exception as e:
