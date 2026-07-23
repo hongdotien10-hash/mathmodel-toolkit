@@ -251,12 +251,16 @@ class AISolver:
 ## 保存路径
 {fig_dir}/sub_{sp_id}_plot.pdf
 
-请编写matplotlib代码生成一张论文级质量的图。要求:
+请编写matplotlib代码生成一张论文级质量的图。严格要求:
+- **所有文字必须是中文**: 标题、轴标签、图例、数值标注全部用中文
+- 中文字体设置(必须放在代码开头):
+  plt.rcParams['font.sans-serif'] = ['SimHei','Microsoft YaHei','DejaVu Sans']
+  plt.rcParams['axes.unicode_minus'] = False
 - 使用合适的图表类型(路线图/柱状图/对比图/热力图等)
-- 标注清晰(轴标签、图例、数值标注)
-- 中文字体: plt.rcParams['font.sans-serif'] = ['SimHei','Microsoft YaHei','DejaVu Sans']
-- 不使用plt.show(), 而是savefig到指定路径
-- 300dpi, bbox_inches='tight'
+- figsize至少(10,6), 标注清晰(大号轴标签、图例、数值标注)
+- 专业配色: 使用 ['#2C3E50','#E74C3C','#3498DB','#27AE60','#F39C12'] 等学术配色
+- 去除图表顶部和右侧边框(spines)
+- 不使用plt.show(), 而是 savefig(path, dpi=300, bbox_inches='tight', facecolor='white')
 - 代码完整可执行
 
 只返回Python代码，放在```python```代码块中。"""

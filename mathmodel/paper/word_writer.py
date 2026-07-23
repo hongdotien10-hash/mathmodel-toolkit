@@ -953,14 +953,27 @@ def _routing_section_content(doc, sec, result, fig_dir, fig_num, ai_text):
         if tour_labels:
             _para(doc, f"最优配送顺序：{' -> '.join(str(l) for l in tour_labels[:10])}")
 
-    # Embed routing figures
-    for pat in ["*.pdf", "*.png"]:
+    # Extract sp_id from sec (format: "4.X")
+    sp_id = sec.split(".")[-1] if "." in sec else "1"
+
+    # Embed ALL generated figures for this section
+    found_any = False
+    # Priority 1: sub-problem-specific figures
+    sp_patterns = [f"sub_{sp_id}_plot*.pdf", f"sub_{sp_id}_*.pdf", f"sub_{sp_id}_*.png",
+                   f"*sub_{sp_id}*route*.pdf", f"*sub_{sp_id}*network*.pdf",
+                   f"*sub_{sp_id}*algo*.pdf", f"*sub_{sp_id}*convergence*.pdf"]
+    for pat in sp_patterns:
         for f in sorted(fig_dir.glob(pat)):
             fig_num[0] += 1
-            _insert_figure(doc, f, f"图{fig_num[0]}：路径优化结果")
-            break
-        else: continue
-        break
+            caption = f"图{fig_num[0]}：问题{sp_id}求解结果 - {f.stem}"
+            _insert_figure(doc, f, caption)
+            found_any = True
+    # Fallback: any PDF/PNG in figures dir
+    if not found_any:
+        for f in sorted(list(fig_dir.glob("*.pdf")) + list(fig_dir.glob("*.png"))):
+            fig_num[0] += 1
+            _insert_figure(doc, f, f"图{fig_num[0]}：求解结果示意图")
+            found_any = True; break
 
 
 def _knapsack_section_content(doc, sec, result, fig_dir, fig_num, ai_text):
