@@ -6,7 +6,7 @@
 
 import sys, json, re
 from pathlib import Path
-import re
+import re, json
 import numpy as np
 import pandas as pd
 import matplotlib
@@ -198,24 +198,47 @@ def main():
                 print(f"  [Phase A] Deep TSP solving ({n} locations, 10min budget)...")
                 deep_result = deep_solve_tsp(sparse, n, fig_dir, sp_id, time_budget=600)
 
-                # Phase B: 30-API deep thinking per question
+                # Phase B: AI writes code + generates figures (real token usage)
                 ai_insights = {}
                 if api_key:
-                    print(f"  [Phase B] 30-API deep analysis pipeline...")
+                    print(f"  [Phase B] AI-driven code + figure generation...")
                     try:
-                        from mathmodel.pipeline.deep_thinker import DeepThinker
-                        thinker = DeepThinker(api_key=api_key)
-                        result_preview = {
+                        from mathmodel.pipeline.ai_solver import AISolver
+                        ai = AISolver(api_key=api_key)
+
+                        # 1. AI writes solving code + iterates until correct
+                        result_data = {
                             "total_distance": deep_result["best"]["distance"],
-                            "tour": deep_result["best"]["tour"][:10],
+                            "tour": deep_result["best"]["tour"],
                             "method": deep_result["best"]["method"],
                             "n_locations": n,
                             "all_methods": deep_result["all_ranked"],
                         }
-                        ai_insights = thinker.think_one_question(
-                            sp, problem_text, data_profiles, result_preview, fig_dir)
+                        code_result = ai.solve_with_code_loop(
+                            sp, data_files, data_profiles, fig_dir,
+                            expected_answer_hint="",
+                            max_rounds=3)
+
+                        # 2. AI generates figure code directly
+                        fig_paths = []
+                        for fig_purpose in [
+                            f"最优路径可视化 — 展示{dist}km的路线和访问顺序",
+                            f"算法对比 — 对比NN/2-opt/SA三种算法的距离差异",
+                        ]:
+                            fig_path = ai.generate_figure_code(
+                                sp_id, result_data, fig_dir, purpose=fig_purpose)
+                            if fig_path:
+                                fig_paths.append(fig_path)
+
+                        ai_insights = {
+                            "code_result": code_result,
+                            "figure_paths": fig_paths,
+                            "total_api_calls": ai.calls,
+                        }
+                        print(f"  AI: {ai.calls} calls, {len(fig_paths)} figures")
                     except Exception as e:
                         print(f"  AI error: {e}")
+                        import traceback; traceback.print_exc()
 
                 all_results[f"sub_{sp_id}"] = {
                     "method": "Floyd-Warshall + TSP(NN+2-opt+SA)",
@@ -462,28 +485,46 @@ def main():
         except Exception as e:
             print(f"  AI writing failed: {e}")
 
-    # --- Paper-level AI analysis (20 API calls) ---
-    paper_insights = {}
+    # --- Paper-level AI writing (fewer calls, each produces real content) ---
     if api_key:
-        print_section("Phase 7.5: Cross-Question Paper-Level Analysis")
+        print_section("Phase 7.5: AI Paper Writing")
         try:
-            from mathmodel.pipeline.deep_thinker import DeepThinker
-            paper_thinker = DeepThinker(api_key=api_key)
-            paper_insights = paper_thinker.think_paper_level(
-                sub_problems, all_results, problem_text, data_profiles)
-            # Inject into ai_content
-            if paper_insights.get("abstract_final"):
-                ai_content["abstract"] = paper_insights["abstract_final"]
-            if paper_insights.get("conclusion_final"):
-                ai_content["conclusion"] = paper_insights.get("conclusion_final", "")
-            if paper_insights.get("cross_comparison"):
-                ai_content["cross_analysis"] = paper_insights.get("cross_comparison", "")
-            print(f"  Paper AI: {paper_thinker.total_calls} calls, ¥{paper_thinker.total_cost:.4f}")
-            pq = paper_insights.get("paper_quality", {})
-            if isinstance(pq, dict):
-                print(f"  Estimated prize: {pq.get('estimated_prize', '?')}")
+            from mathmodel.pipeline.ai_solver import AISolver
+            pw = AISolver(api_key=api_key)
+
+            # Build result summary for paper context
+            result_summary = ""
+            for sp in sub_problems:
+                sp_id = sp.get("id", "?")
+                r = all_results.get(f"sub_{sp_id}", {})
+                result_summary += f"问题{sp_id}: 总距离={r.get('total_distance','?')}km, "
+                result_summary += f"方法={r.get('method','?')[:50]}, "
+                result_summary += f"地点数={r.get('n_locations','?')}\n"
+
+            # 1. AI writes abstract (1 big output call)
+            abstract = pw._call(
+                "基于所有求解结果,写400-500字的论文摘要。包含: 问题概述、"
+                "每个子问题的方法和具体数值结果、核心结论。中文,学术风格。"
+                "这是论文最重要的部分。",
+                f"题目:\n{problem_text[:2000]}\n求解结果:\n{result_summary}\n"
+                f"详细结果:\n{json.dumps({k: {kk: str(vv)[:200] for kk, vv in v.items() if kk != 'tour'} for k, v in all_results.items()}, ensure_ascii=False, default=str)[:3000]}",
+                max_tok=4000)
+            if abstract and len(abstract) > 100:
+                ai_content["abstract"] = abstract
+                print(f"  Abstract: {len(abstract)} chars")
+
+            # 2. AI reviews and improves abstract
+            abstract_v2 = pw._call(
+                "你是国赛评委。审阅这个摘要并重写一个更好的版本。"
+                "要求: 数字更准确、逻辑更清晰、语言更流畅、信息密度更高。",
+                f"原摘要:\n{abstract[:2000]}\n\n请重写。", max_tok=4000)
+            if abstract_v2 and len(abstract_v2) > 100:
+                ai_content["abstract"] = abstract_v2
+                print(f"  Abstract v2: {len(abstract_v2)} chars")
+
+            print(f"  Paper writing: {pw.calls} calls")
         except Exception as e:
-            print(f"  Paper AI: {e}")
+            print(f"  Paper AI writing: {e}")
 
     _pause("All results ready. Generate paper now?")
 
