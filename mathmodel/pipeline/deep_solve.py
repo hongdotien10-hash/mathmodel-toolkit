@@ -84,8 +84,32 @@ def deep_solve_tsp(sparse_matrix, n, fig_dir, question_id, time_budget=600):
     elapsed = time.time() - start_time
     print(f"  [DeepTSP] BEST: {best_method} -> {best_dist} (took {elapsed:.1f}s)")
 
-    # --- Generate convergence plot ---
-    _plot_tsp_convergence(results, sa_history, fig_dir, question_id)
+    # --- Generate professional figures ---
+    try:
+        from mathmodel.pipeline.professional_figures import (
+            fig_tsp_network, fig_algorithm_comparison, fig_convergence_curve,
+            fig_distance_matrix_heatmap
+        )
+        # TSP network with real layout
+        fig_tsp_network(sparse_matrix, n, best_tour, best_dist,
+                       str(Path(fig_dir) / f"sub_{question_id}_network.pdf"),
+                       title=f"Question {question_id}: TSP Optimal Route")
+
+        # Algorithm comparison
+        methods_dict = {m[:25]: d for d, m in results.get("all_ranked", [])}
+        if methods_dict:
+            fig_algorithm_comparison(methods_dict,
+                                    str(Path(fig_dir) / f"sub_{question_id}_algo_compare.pdf"),
+                                    title=f"Q{question_id}: Algorithm Comparison")
+
+        # Convergence curves
+        if sa_history:
+            fig_convergence_curve(sa_history,
+                                 str(Path(fig_dir) / f"sub_{question_id}_convergence.pdf"),
+                                 title=f"Q{question_id}: Simulated Annealing Convergence")
+    except Exception as e:
+        print(f"  Professional figures failed: {e}, falling back to basic")
+        _plot_tsp_convergence(results, sa_history, fig_dir, question_id)
 
     return results
 

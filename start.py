@@ -35,34 +35,14 @@ OUTPUT_DIR = Path(__file__).parent / "output"
 # --- CLI flags ---
 INTERACTIVE = "--interactive" in sys.argv or "-i" in sys.argv
 
-# 比赛类型
-CONTEST_TYPE = "auto"
-for a in sys.argv:
-    if a.startswith("--contest="):
-        CONTEST_TYPE = a.split("=")[1]
-    elif a in ("--cumcm", "--国赛"):
-        CONTEST_TYPE = "cumcm"
-    elif a in ("--mcm", "--美赛"):
-        CONTEST_TYPE = "mcm"
-    elif a in ("--diangong", "--电工杯"):
-        CONTEST_TYPE = "diangong"
-
-# 做几问
-MAX_QUESTIONS = 99  # all
-for a in sys.argv:
-    if a.startswith("--questions="):
-        MAX_QUESTIONS = int(a.split("=")[1])
-    elif a.startswith("-q"):
-        MAX_QUESTIONS = int(a[2:]) if len(a) > 2 else 99
-
 # 比赛特定参数
 CONTEST_PARAMS = {
-    "cumcm": {"vehicle_speed": 50, "max_pages": 25, "lang": "zh"},
-    "diangong": {"vehicle_speed": 50, "max_pages": 25, "lang": "zh"},
-    "mcm": {"vehicle_speed": 31, "max_pages": 25, "lang": "en"},  # 31mph ~ 50kmh
-    "auto": {"vehicle_speed": 50, "max_pages": 25, "lang": "zh"},
+    "cumcm": {"vehicle_speed": 50, "max_pages": 25, "lang": "zh", "name": "国赛 CUMCM"},
+    "diangong": {"vehicle_speed": 50, "max_pages": 25, "lang": "zh", "name": "电工杯"},
+    "mcm": {"vehicle_speed": 50, "max_pages": 25, "lang": "en", "name": "美赛 MCM/ICM"},
+    "huawei": {"vehicle_speed": 50, "max_pages": 25, "lang": "zh", "name": "华为杯"},
+    "auto": {"vehicle_speed": 50, "max_pages": 25, "lang": "zh", "name": "自动检测"},
 }
-cp = CONTEST_PARAMS.get(CONTEST_TYPE, CONTEST_PARAMS["auto"])
 
 
 def _pause(msg="Continue?"):
@@ -76,8 +56,13 @@ def _pause(msg="Continue?"):
 
 
 def main():
+    # --- Show interactive menu ---
+    from mathmodel.pipeline.menu import show_menu
+    CONTEST_TYPE, MAX_QUESTIONS = show_menu()
+    cp = CONTEST_PARAMS.get(CONTEST_TYPE, CONTEST_PARAMS["auto"])
+
     tracker = PhaseTracker(title="MathModel Toolkit PRO")
-    print_header("MathModel Toolkit PRO — Award-Level")
+    print_header(f"MathModel Toolkit — {cp['name']}")
     if INTERACTIVE:
         print("  [Interactive mode] Will pause at each phase for review.")
 
@@ -287,6 +272,56 @@ def main():
     # === Step 8: 🆕 PRO — Chart Suite ===
     print_section("PRO Phase 6: Professional Chart Suites")
     cs = ChartSuite()
+
+    # Generate professional figures from real data
+    try:
+        from mathmodel.pipeline.professional_figures import (
+            fig_tsp_network, fig_algorithm_comparison, fig_convergence_curve,
+            fig_distance_matrix_heatmap, fig_question_comparison
+        )
+
+        # Distance matrix heatmap
+        for name, df in data_files.items():
+            if name.endswith("_norm"): continue
+            numeric = df.select_dtypes(include=np.number)
+            if numeric.shape[1] >= 10:
+                fig_distance_matrix_heatmap(numeric.values, min(numeric.shape[0], numeric.shape[1]),
+                                           str(fig_dir / f"distance_matrix_{name}.pdf"),
+                                           title=f"Distance Matrix - {name}")
+                print(f"  Distance matrix heatmap: {name}")
+                break
+
+        # Sub-problem specific figures
+        for key, val in all_results.items():
+            if "tour" in val and val.get("tour"):
+                # TSP network with real coordinates
+                sp_id = key.replace("sub_", "")
+                # Find the data used for this sub-problem
+                for name, df in data_files.items():
+                    if name.endswith("_norm"): continue
+                    numeric = df.select_dtypes(include=np.number)
+                    if numeric.shape[1] >= 5:
+                        tour = val["tour"]
+                        dist = val.get("total_distance", 0)
+                        fig_tsp_network(numeric.values, len(tour)-1, tour, dist,
+                                       str(fig_dir / f"{key}_network.pdf"),
+                                       title=f"Question {sp_id}")
+                        print(f"  [{key}] TSP network figure")
+                        break
+
+                # Algorithm comparison
+                methods = val.get("all_methods", [])
+                if methods:
+                    methods_dict = {m[:25]: d for d, m in methods[:6]}
+                    fig_algorithm_comparison(methods_dict,
+                                            str(fig_dir / f"{key}_algo_compare.pdf"),
+                                            title=f"Q{sp_id} Algorithm Comparison")
+                    print(f"  [{key}] Algorithm comparison figure")
+
+    except Exception as e:
+        print(f"  Professional figures: {e}")
+
+    # Standard chart suites
     for key, val in all_results.items():
         if "tour" in val or "routes" in val:
             _make_routing_figure(val, key, fig_dir)
@@ -335,6 +370,14 @@ def main():
             print(f"  AI writing failed: {e}")
 
     _pause("All results ready. Generate paper now?")
+
+    # --- Generate question comparison figure ---
+    try:
+        from mathmodel.pipeline.professional_figures import fig_question_comparison
+        fig_question_comparison(all_results, str(fig_dir / "all_questions_comparison.pdf"))
+        print("  All-questions comparison figure generated")
+    except Exception as e:
+        print(f"  Comparison figure: {e}")
 
     # === Step 10: Generate Papers ===
     print_section("Phase 8: Paper Generation")
