@@ -66,10 +66,15 @@ def _para(doc, text, indent=True, bold=False, size=12):
 
 
 def _insert_figure(doc, image_path, caption="", width_inches=5.2):
-    path = Path(image_path)
+    path = Path(image_path).resolve()
     if not path.exists():
-        _para(doc, f"[图表未找到: {path.name}]")
-        return
+        # Try relative to current dir
+        alt = Path.cwd() / image_path
+        if alt.exists():
+            path = alt
+        else:
+            _para(doc, f"[图表: {Path(image_path).name}]")
+            return
     if caption:
         cap = doc.add_paragraph()
         cap.alignment = WD_ALIGN_PARAGRAPH.CENTER

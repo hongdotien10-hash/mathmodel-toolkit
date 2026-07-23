@@ -166,26 +166,22 @@ def main():
         sp_id = sp["id"]
         ptype = sp["type"]
 
-        # Use contest winner if available
+        # Contest: use winner ONLY if it's a non-routing problem and has real results
         winner_model = ""
-        if f"sub_{sp_id}" in contest_results:
+        sp_text = sp.get("title", "") + sp.get("full_text", "")
+        is_routing_sp = any(kw in sp_text for kw in ["路径", "配送", "路线", "车辆", "route", "VRP", "TSP", "CVRP", "选址"])
+
+        if is_routing_sp:
+            # For routing problems: ALWAYS use deep solver, skip contest
+            print(f"  Q{sp_id}: Routing detected, using deep solver (skipping contest)...")
+        elif f"sub_{sp_id}" in contest_results:
             best = contest_results[f"sub_{sp_id}"]
             winner = best.get("winner", "")
-            # If contest failed (no valid model), fall through to local solver
             if winner not in ("无有效模型", "无", "", None):
                 best_result = next((c for c in best.get("candidates", [])
                                     if c["model"] == winner), {})
                 result_data = best_result.get("result", {})
-                # Convert contest format to paper format
-                if result_data and result_data.get("tour"):
-                    result_data["total_distance"] = result_data.get("metric_value", 0)
-                    result_data["tour_labels"] = [str(t+1) for t in result_data["tour"]]
-                    result_data["n_locations"] = len(result_data["tour"]) - 1
-                    result_data["summary"] = f"最优路径总距离: {result_data.get('metric_value',0)}km"
-                    all_results[f"sub_{sp_id}"] = result_data
-                    print(f"  Q{sp_id}: [{winner}] — contest winner (routing)")
-                    continue
-                elif result_data and result_data.get("metric_value", -1) != 0 and \
+                if result_data and result_data.get("metric_value", -1) != 0 and \
                    result_data.get("selection") != []:
                     all_results[f"sub_{sp_id}"] = result_data
                     print(f"  Q{sp_id}: [{winner}] — contest winner")
