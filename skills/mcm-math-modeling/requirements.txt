@@ -1,0 +1,15 @@
+# Runtime dependencies for mcm-math-modeling
+#
+# Install with:  pip install -r requirements.txt
+#
+# Only numpy + matplotlib are needed for the plotting scripts.
+# scipy is required by scripts/solver_templates.py (GA / PSO / SA / bisection / grid search).
+# statsmodels and scikit-learn are only needed if you build your own forecasting models.
+
+numpy>=1.24
+matplotlib>=3.7
+scipy>=1.11
+
+# Optional, for forecasting / classification sub-problems
+# statsmodels>=0.14
+# scikit-learn>=1.3

@@ -152,6 +152,38 @@ plotter.save(fig, "figures/scores.pdf")
 
 ---
 
+## 🧠 数模工作流技能（mcm-math-modeling）
+
+`skills/mcm-math-modeling/` 是一套**完整的工作流技能**，从赛题到可提交论文全流程覆盖，
+与本仓库的 Python 引擎互补：引擎负责"算"，技能负责"按竞赛标准写"。
+
+**核心特点：可执行门禁，不是口号。** 工作流设 CP1 / CP2 / CP3 三道强制检查点，
+由 `scripts/verify_checkpoint.py` 实测校验，非零退出即阻断流程——自报 ✅ 不能替代脚本判定。
+
+```bash
+# 校验建模分析阶段（CP1）
+python skills/mcm-math-modeling/scripts/verify_checkpoint.py cp1 ./你的项目目录
+```
+
+| 内容 | 说明 |
+|------|------|
+| `SKILL.md` | 6 阶段完整流程，所有硬规则与门禁定义 |
+| `references/` (29) | 阶段指南 + 领域知识：建模规范、题型防错表、模型选型决策树、获奖论文结构、创新维度、COMAP 规则与 AI 使用声明 |
+| `scripts/` (7) | 门禁校验、求解器模板（GA/PSO/SA/二分/网格）、论文格式检查、Nature 风格绘图、流程图生成 |
+| `assets/templates/` (382) | 34 套赛题模板（国赛/华为杯/华中杯/五一杯/Mathorcup/MCM/ICM 等），Typst + LaTeX 双版本 |
+
+**支持范围**：中文 14 个赛制 + 英文 3 个赛制（APMCM / MCM / ICM），Typst 与 LaTeX 双引擎。
+
+**安装依赖**（绘图与求解器模板需要）：
+```bash
+pip install -r skills/mcm-math-modeling/requirements.txt
+```
+
+> 技能符合开放的 SKILL.md 标准，可运行于 Claude Code、Cursor、Codex CLI、OpenCode、Copilot 等。
+> 详细说明见 [`skills/mcm-math-modeling/README.md`](skills/mcm-math-modeling/README.md)。
+
+---
+
 ## 🗂️ 项目结构
 
 ```
@@ -167,7 +199,8 @@ plotter.save(fig, "figures/scores.pdf")
 │   ├── models/                #   模型库
 │   ├── visualization/         #   论文图表
 │   └── paper/                 #   Word 论文生成
-├── skills/                    # 📚 数模工作流(17个)
+├── skills/                    # 📚 数模工作流技能
+│   └── mcm-math-modeling/     #   mcm-math-modeling（完整工作流 + 34套赛题模板）
 ├── matlab/                    # MATLAB 工具箱
 └── webui/                     # Web 界面
 ```
