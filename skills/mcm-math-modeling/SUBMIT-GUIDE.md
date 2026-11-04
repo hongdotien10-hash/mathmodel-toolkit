@@ -42,7 +42,7 @@ Every rule traces to a real contest failure:
 WHAT'S INCLUDED
 • SKILL.md — the whole workflow: 6 stages, every hard rule, every gate
 • references/ (29 files) — stage guides plus the domain knowledge: modeling norms, problem-type pitfall tables, selection decision trees, award-paper structure, innovation dimensions, COMAP rules and AI-use disclosure, MCM judging criteria, O/F award paper benchmarks, paper-writing and figure guidance
-• scripts/ (7 files) — verify_checkpoint.py (the CP1/CP2/CP3 gate, stdlib only), solver_templates.py (GA/PSO/SA/bisection/grid search), writing_check.sh, check_mcm_format.py, nature_plot.py, flowchart.py, journal_fig.py
+• scripts/ (8 files) — verify_checkpoint.py (the CP1/CP2/CP3 gate, stdlib only), solver_templates.py (GA/PSO/SA/bisection/grid search), writing_check.sh, check_mcm_format.py, nature_plot.py, flowchart.py, journal_fig.py, make_icon.py (regenerates icon.png)
 • assets/templates/ (382 files) — 34 competition templates (CUMCM, Huawei Cup, Huazhong Cup, Wuyi Cup, Mathorcup, MCM, ICM, APIMCM and more) in both Typst and LaTeX
 
 HOW IT RUNS
@@ -79,14 +79,21 @@ Agensi 官方指引：**$5-15** 适合单一功能小工具，**$20-50** 适合"
 
 Agensi 的图标是**正方形图片**（市场首页展示为 80×80，实际建议上传 512×512 PNG）。
 
-做法：用包里的 Nature 风格配色 + 简洁数学符号生成一张。可直接调用本包自带的 `nature_plot.py`：
+**✅ 已生成：`icon.png`（512×512 PNG，15 KB）**，直接上传这个文件。
 
-```python
-import sys; sys.path.insert(0, 'scripts')
-from nature_plot import apply_nature_style, new_figure, save_figure, NPG_COLORS
+设计：深色底 `#11151C` + 白色 `f(x) = max` 主体 + 三色节点（子问题拆解）
++ 底部约束括号（三段约束追溯），配色取自本包 `nature_plot.py` 的 NPG_COLORS，
+与包内绘图风格统一。
+
+想改配色或换符号，重新生成：
+
+```bash
+python scripts/make_icon.py
 ```
 
-或者更省事：画一张深色底 + 白色 `∫∑∂` 或 `f(x)=max` 的极简图标。**别用截图** —— 数学符号比界面截图在列表里更抓眼。
+脚本可直接改 `DARK_BG` / `FG` / 主体表达式，或调整节点与括号位置。
+
+> **别用截图** —— 数学符号比界面截图在列表里更抓眼。
 
 ---
 
@@ -137,7 +144,7 @@ unzip -l mcm-math-modeling.zip | head -20
 - [ ] `description` 含明确触发词（agensi 官方建议 3-5 个触发短语）
 - [ ] 无任何硬编码密钥
 - [ ] 无 `rm -rf` / `sudo` / `curl | sh` 等危险命令
-- [ ] 至少有一个支撑文件（本包有 411 个）
+- [ ] 至少有一个支撑文件（本包有 424 个）
 - [ ] zip 结构正确，SKILL.md 在文件夹根
 - [ ] 引用文件全部真实存在（本包已全量扫描，0 断链）
 - [ ] 脚本能实际运行（本包已实测 CP1 正反双向）
