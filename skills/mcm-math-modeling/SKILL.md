@@ -30,11 +30,31 @@ problem; a 2024 problem that produced a 10-page, 6-figure paper and was downgrad
 
 ---
 
+## What this package is
+
+A **skill package** — a complete methodology for running a modeling contest: how to read
+the statement, split sub-problems, choose a model, trace every constraint into a formula
+and a code interface, write the paper, and accept the result.
+
+Packaging it as a skill exists so the methodology can be **reused** rather than re-explained
+every time. It has two equivalent modes, and both are first-class:
+
+- **Installed in an agent** — the agent reads this file and drives the workflow.
+- **Used as a working guide** — a person (or a team) reads this file and the stage guides
+  and follows them, running the checkpoint scripts to self-verify.
+
+The gates hold in both modes. That is the point of the package.
+
+This package is **not tied to any particular agent or model**. Anything that can read
+Markdown and run shell commands can use it — and so can a person.
+
 ## Package layout
 
 ```
 mcm-math-modeling/
 ├── SKILL.md              ← this file (entry point, all workflow rules)
+├── install.sh / install.bat   ← one-command install into any agent's skills directory
+├── icon.png / _icon.png  ← 512×512 marketplace icon
 ├── references/           ← stage guides + domain knowledge (read on demand)
 │   ├── stage-2-analysis-modeling.md    modeling design & constraint tracing
 │   ├── stage-3-coding-visual.md        solver authenticity & figure standards
