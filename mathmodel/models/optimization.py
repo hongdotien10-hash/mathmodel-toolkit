@@ -189,12 +189,39 @@ class OptimizationSolver:
     ) -> OptimizationResult:
         """使用 PuLP 求解整数规划。"""
         try:
-            from pulp import LpProblem, LpMinimize, LpVariable, LpStatus, value
+            import pulp
+            from pulp import LpProblem, LpMinimize, LpVariable, value
         except ImportError:
             raise ImportError("整数规划需要 PuLP: pip install pulp")
 
+        # PuLP 4.x 移除了 pulp.LpStatus 字典，改用 prob.status 枚举名。
+        # 这里做版本兼容：旧版取字典，新版直接用求解器给出的状态字符串。
+        try:
+            from pulp import LpStatus  # PuLP <= 3.x
+        except ImportError:
+            LpStatus = None
+
+        # PuLP 4.0 起改用 Rust 内核，变量必须经 prob.add_variable() 创建。
+        # 用签名探测而不是版本号，避免和发行版号/预发布号纠缠。
+        import inspect
+        _PULP_USES_ADD_VARIABLE = (
+            "add_variable" in dir(LpProblem)
+            and "lowBound" in inspect.signature(LpProblem.add_variable).parameters
+        )
+
         n = len(c)
         prob = LpProblem("IP", LpMinimize)
+
+        # PuLP 4.x 不再捆绑求解器，默认求解器为空会报 "No solver available"。
+        # 判断依据是 pulp 的默认求解器是否可用（而不是"是否存在任何可用 solver"——
+        # HiGHS 虽然可用，但必须显式指定才会被使用）。
+        # pulp.LpSolverDefault 在 2.x/3.x 与 4.x 都从顶层导出，位置稳定。
+        if getattr(pulp, "LpSolverDefault", None) is None:
+            try:
+                import highspy  # noqa: F401  —— 仅为触发求解器注册
+                prob.solver = pulp.HiGHS(msg=False)
+            except ImportError:
+                pass
 
         # 变量
         if isinstance(bounds, tuple):
@@ -210,11 +237,22 @@ class OptimizationSolver:
             low = bounds[i][0] if bounds[i][0] is not None else 0
             high = bounds[i][1] if bounds[i][1] is not None else None
             if integer_indices and i in integer_indices:
-                x.append(LpVariable(f"x{i}", low, high, "Integer"))
+                cat_i = "Integer"
             elif binary:
-                x.append(LpVariable(f"x{i}", 0, 1, "Binary"))
+                low, high, cat_i = 0, 1, "Binary"
             else:
-                x.append(LpVariable(f"x{i}", low, high, cat))
+                cat_i = cat
+
+            # PuLP 4.0 是 Rust 重写版：LpVariable 不再能用构造器创建，
+            # 必须走 prob.add_variable()；且 lowBound/upBound 必须有限。
+            # PuLP 2.x/3.x 则相反，只能用 LpVariable 构造器。
+            # 这里按版本分流，两边都能跑。
+            if _PULP_USES_ADD_VARIABLE:
+                # 无上界时给一个足够大的有限值（模型规模远小于此）
+                up = high if high is not None else 1e9
+                x.append(prob.add_variable(f"x{i}", lowBound=low, upBound=up, cat=cat_i))
+            else:
+                x.append(LpVariable(f"x{i}", low, high, cat_i))
 
         # 目标
         prob += sum(c[i] * x[i] for i in range(n))
@@ -229,12 +267,35 @@ class OptimizationSolver:
 
         prob.solve()
 
-        success = LpStatus[prob.status] == "Optimal"
+        # 状态判定：不同大版本 API 完全不同
+        #   PuLP 2.x/3.x —— prob.status 是整数，LpStatus[status] 是状态名
+        #   PuLP 4.x     —— prob.status 属性已移除，改由 solverModel.getModelStatus()
+        #                   给出 HighsModelStatus 枚举（kOptimal / kInfeasible …）
+        status_name = None
+        if _PULP_USES_ADD_VARIABLE:
+            try:
+                raw = prob.solverModel.getModelStatus()
+                status_name = getattr(raw, "name", str(raw))
+                # kOptimal -> 归一化成旧版的 "Optimal"，让下游判断逻辑一致
+                if status_name.startswith("k"):
+                    status_name = status_name[1:]
+            except Exception:
+                status_name = None
+        elif LpStatus is not None:
+            status_name = LpStatus[prob.status]
+
+        if status_name is None:
+            # 拿不到状态时不做乐观假设：按未收敛处理
+            status_name = "Unknown"
+            success = False
+        else:
+            success = status_name == "Optimal"
+
         return OptimizationResult(
             success=success,
             x=np.array([value(v) for v in x]),
             fun=value(prob.objective) if success else float("inf"),
-            message=LpStatus[prob.status],
+            message=status_name,
         )
 
     # =====================================================================

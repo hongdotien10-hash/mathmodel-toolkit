@@ -16,12 +16,14 @@ echo [OK] Python found
 :: Install dependencies
 echo.
 echo Installing dependencies...
-pip install -e . -q
+:: Use "python -m pip" rather than bare "pip" — they can point at different
+:: interpreters, which leaves the install looking successful but unimportable.
+python -m pip install -e . -q
 echo.
 
 :: Install optional dependencies
 echo Installing optional features (PDF, optimization)...
-pip install -e ".[pdf,optimization,timeseries]" -q
+python -m pip install -e ".[pdf,optimization,timeseries]" -q
 echo.
 
 :: Copy env template

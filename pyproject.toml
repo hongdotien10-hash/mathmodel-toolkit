@@ -57,6 +57,9 @@ pdf = [
 optimization = [
     "cvxpy>=1.4.0",
     "pulp>=2.7.0",
+    # PuLP 4.x 不再捆绑求解器，必须显式装 HiGHS，否则整数规划报
+    # "No solver available"。旧版 PuLP 自带 CBC，装它也无副作用。
+    "highspy>=1.7.0",
 ]
 timeseries = [
     "statsmodels>=0.14.0",

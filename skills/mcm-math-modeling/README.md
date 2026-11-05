@@ -104,6 +104,11 @@ chmod +x install.sh && ./install.sh
 
 然后按 6 阶段推进，在三个决策门停下来等你拍板。
 
+**"一键生成论文"这件事，是装进智能体之后才有的。** 本包本身不含一个
+`python start.py` 就能交稿的入口 —— 那些判断、决策门、门禁校验是**流程**，
+需要一个能读文档、能执行命令、能在关键处停下来问你的执行者。
+智能体就是这个执行者；你自己照着读 `SKILL.md` 往下走，效果一样。
+
 ---
 
 ## 用法 B：当行动指南读
@@ -305,6 +310,12 @@ The agent loads `SKILL.md`, asks for engine / contest / language / sub-problem c
 then runs the stages, pausing at each decision gate for your input. The `description`
 field carries the trigger vocabulary (math modeling · 数模 · 建模 · MCM · ICM · COMAP ·
 CUMCM · 国赛 · 美赛 · 杯赛), so the skill loads without being named.
+
+**"One-click paper" only exists once this is installed in an agent.** There is deliberately
+no standalone script that turns a problem folder into a submittable paper: the judgment
+calls, the decision gates, and the checkpoint gates are a *process*, and they need an
+executor that can read documents, run commands, and stop to ask you when it matters.
+An agent is that executor — and so are you, following `SKILL.md` by hand.
 
 **Mode B — use it as a working guide.** Read `SKILL.md` and the relevant
 `references/stage-*.md` and follow them yourself, or with your team. The checkpoint

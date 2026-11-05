@@ -12,9 +12,11 @@ fi
 echo "[OK] Python found"
 
 # Install
+# Use "python3 -m pip" rather than bare "pip" — they can point at different
+# interpreters, which leaves the install looking successful but unimportable.
 echo "Installing dependencies..."
-pip install -e . -q
-pip install -e ".[pdf,optimization,timeseries]" -q
+python3 -m pip install -e . -q
+python3 -m pip install -e ".[pdf,optimization,timeseries]" -q
 
 # Copy env
 if [ ! -f .env ]; then
